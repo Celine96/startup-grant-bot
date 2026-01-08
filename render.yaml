@@ -1,0 +1,31 @@
+services:
+  # 슬랙 봇 서버
+  - type: web
+    name: startup-grant-bot-simple
+    runtime: python3
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SPREADSHEET_KEY
+        sync: false
+      - key: GOOGLE_SHEETS_CREDENTIALS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+  
+  # 크롤러 (매주 일요일 자정)
+  - type: cron
+    name: crawler
+    runtime: python3
+    schedule: "0 15 * * 0"  # 일요일 15:00 UTC = 월요일 00:00 KST
+    buildCommand: pip install -r requirements.txt
+    startCommand: python crawler.py
+    envVars:
+      - key: SPREADSHEET_KEY
+        sync: false
+      - key: GOOGLE_SHEETS_CREDENTIALS
+        sync: false
