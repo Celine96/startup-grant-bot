@@ -2,7 +2,7 @@ services:
   # 슬랙 봇 서버
   - type: web
     name: startup-grant-bot-simple
-    runtime: python3
+    env: python
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
@@ -20,7 +20,7 @@ services:
   # 크롤러 (매주 일요일 자정)
   - type: cron
     name: crawler
-    runtime: python3
+    env: python
     schedule: "0 15 * * 0"  # 일요일 15:00 UTC = 월요일 00:00 KST
     buildCommand: pip install -r requirements.txt
     startCommand: python crawler.py
