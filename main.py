@@ -11,7 +11,6 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 from fastapi import FastAPI, Request
 import gspread
 from google.oauth2.service_account import Credentials
-import google.generativeai as genai
 
 # ============================================
 # 설정
@@ -21,19 +20,15 @@ SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDS = json.loads(os.getenv("GOOGLE_SHEETS_CREDENTIALS", "{}"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # 디버깅
 print(f"=== 환경변수 확인 ===")
 print(f"SLACK_BOT_TOKEN 시작: {SLACK_BOT_TOKEN[:10] if SLACK_BOT_TOKEN else 'None'}...")
 print(f"SLACK_SIGNING_SECRET 길이: {len(SLACK_SIGNING_SECRET) if SLACK_SIGNING_SECRET else 0}")
 print(f"SPREADSHEET_KEY 존재: {bool(SPREADSHEET_KEY)}")
-print(f"GEMINI_API_KEY 존재: {bool(GEMINI_API_KEY)}")
 print(f"====================")
 
-# Gemini 설정
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+# Gemini 제거 - 키워드 매칭 사용!
 
 # ============================================
 # Google Sheets DB
@@ -131,43 +126,46 @@ def save_grants(grants: List[dict]):
 # ============================================
 
 def match_grant(grant: dict, profile: dict) -> tuple:
-    """공고와 프로필 매칭 (점수, 이유)"""
-    
-    prompt = f"""
-다음 창업 지원금 공고와 창업자 프로필의 매칭도를 분석해주세요.
-
-**창업자 프로필:**
-- 키워드: {', '.join(profile['keywords'])}
-- 사업: {profile['description']}
-- 단계: {profile['stage']}
-
-**지원금 공고:**
-- 제목: {grant['title']}
-- 기관: {grant['organization']}
-- 설명: {grant.get('description', grant['title'])}
-
-다음 형식으로만 응답하세요:
-점수: [0.0~1.0 숫자]
-이유: [한 줄 설명]
-"""
+    """공고와 프로필 매칭 (점수, 이유) - 키워드 기반"""
     
     try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
+        # 프로필 키워드 (소문자 변환)
+        profile_keywords = [k.lower().strip() for k in profile['keywords']]
         
-        # 파싱
-        score = 0.0
-        reason = "분석 실패"
+        # 공고 텍스트 (제목 + 설명 + 키워드)
+        grant_text = ' '.join([
+            grant.get('title', ''),
+            grant.get('description', ''),
+            grant.get('keywords', '')
+        ]).lower()
         
-        for line in text.split('\n'):
-            if line.startswith('점수:'):
-                score = float(line.replace('점수:', '').strip())
-            elif line.startswith('이유:'):
-                reason = line.replace('이유:', '').strip()
+        # 키워드 매칭
+        matched = []
+        for keyword in profile_keywords:
+            if keyword in grant_text:
+                matched.append(keyword)
+        
+        # 매칭도 계산
+        if len(profile_keywords) > 0:
+            score = len(matched) / len(profile_keywords)
+        else:
+            score = 0.0
+        
+        # 이유 생성
+        if len(matched) == 0:
+            reason = "일치하는 키워드가 없습니다"
+        elif len(matched) == len(profile_keywords):
+            reason = f"모든 키워드 일치: {', '.join(matched)}"
+        else:
+            reason = f"일치 키워드: {', '.join(matched)}"
+        
+        print(f"매칭 결과 - 공고: {grant['title'][:30]}, 점수: {score:.2f}, 이유: {reason}")
         
         return score, reason
-    except:
-        return 0.0, "매칭 분석 실패"
+        
+    except Exception as e:
+        print(f"❌ 매칭 오류: {type(e).__name__}: {str(e)}")
+        return 0.0, f"매칭 분석 실패: {str(e)}"
 
 # ============================================
 # 슬랙 봇
