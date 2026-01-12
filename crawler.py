@@ -365,13 +365,16 @@ def generate_fallback_grants():
     next_month = next_month.replace(day=1)
     two_months = (next_month.replace(day=1) + timedelta(days=32)).replace(day=1)
     
+    # K-Startup 공고 목록 페이지로 통일
+    kstartup_url = "https://www.k-startup.go.kr/web/contents/bizPbanc.do"
+    
     grants = [
         {
             'id': 'fallback-001',
             'title': '초기창업패키지',
             'organization': '창업진흥원',
             'deadline': f'{next_month.year}-{next_month.month:02d}-28',
-            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=168764',
+            'url': kstartup_url,
             'keywords': '초기,창업,사업화',
             'description': '3년 미만 초기 창업기업 사업화 지원. 최대 1억원.'
         },
@@ -380,7 +383,7 @@ def generate_fallback_grants():
             'title': '예비창업패키지',
             'organization': '창업진흥원',
             'deadline': f'{next_month.year}-{next_month.month:02d}-15',
-            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=168762',
+            'url': kstartup_url,
             'keywords': '예비,창업,아이템',
             'description': '예비창업자 창업 아이템 사업화 지원. 최대 5천만원.'
         },
@@ -389,7 +392,7 @@ def generate_fallback_grants():
             'title': 'TIPS 프로그램',
             'organization': 'TIPS운영단',
             'deadline': f'{next_month.year}-{next_month.month:02d}-31',
-            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=168758',
+            'url': kstartup_url,
             'keywords': 'TIPS,기술,R&D',
             'description': '기술혁신형 창업기업 R&D 지원. 최대 5억원.'
         },
@@ -398,7 +401,7 @@ def generate_fallback_grants():
             'title': 'AI 스타트업 육성',
             'organization': '과학기술정보통신부',
             'deadline': f'{two_months.year}-{two_months.month:02d}-20',
-            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=168755',
+            'url': kstartup_url,
             'keywords': 'AI,기술,혁신',
             'description': 'AI 기술 기반 스타트업 육성. R&D 지원.'
         },
@@ -407,7 +410,7 @@ def generate_fallback_grants():
             'title': '핀테크 창업 지원',
             'organization': '금융위원회',
             'deadline': f'{two_months.year}-{two_months.month:02d}-28',
-            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=168751',
+            'url': kstartup_url,
             'keywords': '핀테크,금융',
             'description': '핀테크 스타트업 지원. 사업화 자금 최대 2억원.'
         }
