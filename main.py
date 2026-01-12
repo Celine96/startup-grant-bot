@@ -293,17 +293,37 @@ def test_matching(ack, command, say):
         say("등록된 공고가 없습니다.")
         return
     
-    # 첫 공고로 테스트
-    grant = grants[0]
-    score, reason = match_grant(grant, profile)
+    # 모든 공고 매칭
+    results = []
+    for grant in grants[:5]:  # 최대 5개
+        score, reason = match_grant(grant, profile)
+        if score > 0:  # 매칭도 0% 초과만
+            results.append({
+                'grant': grant,
+                'score': score,
+                'reason': reason
+            })
     
-    say(f"""
-🧪 **매칭 테스트**
-
-공고: {grant['title']}
-매칭도: {int(score*100)}%
-이유: {reason}
-    """)
+    # 점수순 정렬
+    results.sort(key=lambda x: x['score'], reverse=True)
+    
+    if not results:
+        say("매칭되는 공고가 없습니다.")
+        return
+    
+    # 결과 표시
+    message = "🎯 **매칭 결과**\n\n"
+    
+    for result in results[:3]:  # 상위 3개만
+        grant = result['grant']
+        score = int(result['score'] * 100)
+        
+        message += f"✅ **매칭도 {score}%** - {grant['title']}\n"
+        message += f"   📌 {grant['organization']}\n"
+        message += f"   💡 {result['reason']}\n"
+        message += f"   🔗 지원하기: {grant['url']}\n\n"
+    
+    say(message)
 
 # ============================================
 # FastAPI
