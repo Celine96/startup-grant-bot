@@ -1,5 +1,6 @@
 """
 창업지원금 매칭 슬랙봇 - 초간단 버전
+
 """
 
 import os
@@ -251,8 +252,8 @@ def handle_submission(ack, body, view, client):
             text="❌ 저장 실패. 다시 시도해주세요."
         )
 
-@slack_app.command("/status")
-def status(ack, command, say):
+@slack_app.command("/profile")
+def profile_command(ack, command, say):
     """프로필 확인"""
     ack()
     
