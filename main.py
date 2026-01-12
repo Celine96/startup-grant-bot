@@ -1,6 +1,5 @@
 """
-창업지원금 매칭 슬랙봇 - 초간단 버전
-모든 기능이 하나의 파일에!
+창업지원금 매칭 슬랙봇 - 간단 버전
 """
 
 import os
@@ -9,7 +8,7 @@ from datetime import datetime
 from typing import List, Dict
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import gspread
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
@@ -23,6 +22,14 @@ SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDS = json.loads(os.getenv("GOOGLE_SHEETS_CREDENTIALS", "{}"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# 디버깅
+print(f"=== 환경변수 확인 ===")
+print(f"SLACK_BOT_TOKEN 시작: {SLACK_BOT_TOKEN[:10] if SLACK_BOT_TOKEN else 'None'}...")
+print(f"SLACK_SIGNING_SECRET 길이: {len(SLACK_SIGNING_SECRET) if SLACK_SIGNING_SECRET else 0}")
+print(f"SPREADSHEET_KEY 존재: {bool(SPREADSHEET_KEY)}")
+print(f"GEMINI_API_KEY 존재: {bool(GEMINI_API_KEY)}")
+print(f"====================")
 
 # Gemini 설정
 genai.configure(api_key=GEMINI_API_KEY)
@@ -312,23 +319,19 @@ def root():
     return {"status": "ok"}
 
 @api.post("/slack/events")
-async def slack_events(req):
+async def slack_events(req: Request):
+    body = await req.body()
     return await handler.handle(req)
 
 @api.post("/slack/commands")
-async def slack_commands(req):
-    try:
-        print(f"Received request to /slack/commands")
-        print(f"SLACK_BOT_TOKEN exists: {bool(SLACK_BOT_TOKEN)}")
-        print(f"SLACK_SIGNING_SECRET exists: {bool(SLACK_SIGNING_SECRET)}")
-        print(f"SLACK_SIGNING_SECRET length: {len(SLACK_SIGNING_SECRET) if SLACK_SIGNING_SECRET else 0}")
-        return await handler.handle(req)
-    except Exception as e:
-        print(f"Error handling command: {e}")
-        raise
+async def slack_commands(req: Request):
+    body = await req.body()
+    headers = dict(req.headers)
+    return await handler.handle(req)
 
 @api.post("/slack/actions")
-async def slack_actions(req):
+async def slack_actions(req: Request):
+    body = await req.body()
     return await handler.handle(req)
 
 # ============================================
