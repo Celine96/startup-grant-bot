@@ -20,9 +20,7 @@ services:
     name: crawler
     env: python
     schedule: "0 15 * * 0"  # 일요일 15:00 UTC = 월요일 00:00 KST
-    buildCommand: |
-      pip install -r requirements.txt
-      playwright install --with-deps chromium
+    buildCommand: pip install -r requirements.txt
     startCommand: python crawler.py
     envVars:
       - key: SPREADSHEET_KEY
