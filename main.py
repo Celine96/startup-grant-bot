@@ -1,6 +1,6 @@
 """
 창업지원금 매칭 슬랙봇 - 초간단 버전
-
+모든 기능이 하나의 파일에!
 """
 
 import os
@@ -317,7 +317,15 @@ async def slack_events(req):
 
 @api.post("/slack/commands")
 async def slack_commands(req):
-    return await handler.handle(req)
+    try:
+        print(f"Received request to /slack/commands")
+        print(f"SLACK_BOT_TOKEN exists: {bool(SLACK_BOT_TOKEN)}")
+        print(f"SLACK_SIGNING_SECRET exists: {bool(SLACK_SIGNING_SECRET)}")
+        print(f"SLACK_SIGNING_SECRET length: {len(SLACK_SIGNING_SECRET) if SLACK_SIGNING_SECRET else 0}")
+        return await handler.handle(req)
+    except Exception as e:
+        print(f"Error handling command: {e}")
+        raise
 
 @api.post("/slack/actions")
 async def slack_actions(req):
