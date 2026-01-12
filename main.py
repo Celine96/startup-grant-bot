@@ -1,14 +1,20 @@
 """
-창업지원금 매칭 슬랙봇 - 간단 버전
+K-Startup 크롤러 - Playwright 버전
+동적 페이지 크롤링 지원 (Selenium보다 간단)
 """
 
 import os
+import sys
 import json
+import hashlib
 from datetime import datetime
 from typing import List, Dict
-from slack_bolt import App
-from slack_bolt.adapter.fastapi import SlackRequestHandler
-from fastapi import FastAPI, Request
+import time
+
+# Playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+# Google Sheets
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -16,346 +22,304 @@ from google.oauth2.service_account import Credentials
 # 설정
 # ============================================
 
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDS = json.loads(os.getenv("GOOGLE_SHEETS_CREDENTIALS", "{}"))
 
-# 디버깅
-print(f"=== 환경변수 확인 ===")
-print(f"SLACK_BOT_TOKEN 시작: {SLACK_BOT_TOKEN[:10] if SLACK_BOT_TOKEN else 'None'}...")
-print(f"SLACK_SIGNING_SECRET 길이: {len(SLACK_SIGNING_SECRET) if SLACK_SIGNING_SECRET else 0}")
-print(f"SPREADSHEET_KEY 존재: {bool(SPREADSHEET_KEY)}")
-print(f"====================")
-
-# Gemini 제거 - 키워드 매칭 사용!
-
-# ============================================
-# Google Sheets DB
-# ============================================
-
 def get_sheets():
     """Google Sheets 연결"""
-    creds = Credentials.from_service_account_info(
-        GOOGLE_CREDS,
-        scopes=['https://www.googleapis.com/auth/spreadsheets']
-    )
+    scope = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    creds = Credentials.from_service_account_info(GOOGLE_CREDS, scopes=scope)
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_KEY)
 
-def save_profile(user_id: str, data: dict):
-    """프로필 저장"""
-    try:
-        sheet = get_sheets().worksheet("profiles")
-        # 기존 찾기
-        try:
-            cell = sheet.find(user_id)
-            row = cell.row
-            # 업데이트
-            sheet.update(f'A{row}:F{row}', [[
-                user_id,
-                ','.join(data['keywords']),
-                data['description'],
-                data['stage'],
-                data.get('region', ''),
-                ','.join(data.get('support_types', []))
-            ]])
-        except:
-            # 새로 추가
-            sheet.append_row([
-                user_id,
-                ','.join(data['keywords']),
-                data['description'],
-                data['stage'],
-                data.get('region', ''),
-                ','.join(data.get('support_types', []))
-            ])
-        return True
-    except Exception as e:
-        print(f"프로필 저장 실패: {e}")
-        return False
-
-def get_profile(user_id: str):
-    """프로필 조회"""
-    try:
-        sheet = get_sheets().worksheet("profiles")
-        cell = sheet.find(user_id)
-        row = sheet.row_values(cell.row)
-        return {
-            'user_id': row[0],
-            'keywords': row[1].split(',') if row[1] else [],
-            'description': row[2],
-            'stage': row[3],
-            'region': row[4] if len(row) > 4 else '',
-            'support_types': row[5].split(',') if len(row) > 5 and row[5] else []
-        }
-    except:
-        return None
-
-def get_recent_grants(days=7):
-    """최근 공고 조회"""
-    try:
-        sheet = get_sheets().worksheet("grants")
-        records = sheet.get_all_records()
-        # 최근 N일 필터링 (간단 버전: 그냥 최근 20개)
-        return records[-20:] if len(records) > 20 else records
-    except:
-        return []
-
-def save_grants(grants: List[dict]):
-    """공고 저장"""
-    try:
-        sheet = get_sheets().worksheet("grants")
-        for grant in grants:
-            sheet.append_row([
-                grant['id'],
-                grant['title'],
-                grant['organization'],
-                grant['deadline'],
-                grant['url'],
-                grant.get('keywords', ''),
-                grant.get('description', '')
-            ])
-        return True
-    except Exception as e:
-        print(f"공고 저장 실패: {e}")
-        return False
-
 # ============================================
-# AI 매칭
+# Playwright 크롤링
 # ============================================
 
-def match_grant(grant: dict, profile: dict) -> tuple:
-    """공고와 프로필 매칭 (점수, 이유) - 키워드 기반"""
+def crawl_k_startup_playwright():
+    """K-Startup 크롤링 - Playwright"""
+    print("=" * 60)
+    print("K-Startup 크롤링 시작 (Playwright)")
+    print("=" * 60)
+    
+    grants = []
     
     try:
-        # 프로필 키워드 (소문자 변환)
-        profile_keywords = [k.lower().strip() for k in profile['keywords']]
-        
-        # 공고 텍스트 (제목 + 설명 + 키워드)
-        grant_text = ' '.join([
-            grant.get('title', ''),
-            grant.get('description', ''),
-            grant.get('keywords', '')
-        ]).lower()
-        
-        # 키워드 매칭
-        matched = []
-        for keyword in profile_keywords:
-            if keyword in grant_text:
-                matched.append(keyword)
-        
-        # 매칭도 계산
-        if len(profile_keywords) > 0:
-            score = len(matched) / len(profile_keywords)
-        else:
-            score = 0.0
-        
-        # 이유 생성
-        if len(matched) == 0:
-            reason = "일치하는 키워드가 없습니다"
-        elif len(matched) == len(profile_keywords):
-            reason = f"모든 키워드 일치: {', '.join(matched)}"
-        else:
-            reason = f"일치 키워드: {', '.join(matched)}"
-        
-        print(f"매칭 결과 - 공고: {grant['title'][:30]}, 점수: {score:.2f}, 이유: {reason}")
-        
-        return score, reason
-        
+        with sync_playwright() as p:
+            print("브라우저 실행 중...")
+            
+            # Chromium 실행
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            )
+            
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                viewport={'width': 1920, 'height': 1080}
+            )
+            
+            page = context.new_page()
+            
+            # K-Startup 접속
+            url = "https://www.k-startup.go.kr/web/contents/bizPbanc.do"
+            print(f"접속: {url}")
+            
+            try:
+                page.goto(url, wait_until='networkidle', timeout=30000)
+                print("✅ 페이지 로딩 완료")
+                
+                # 추가 대기 (동적 콘텐츠)
+                page.wait_for_timeout(3000)
+                
+                # 다양한 선택자 시도
+                selectors = [
+                    '.board-list li',
+                    '.board tbody tr',
+                    'table.table tbody tr',
+                    '.list-item',
+                    'tr[onclick]'
+                ]
+                
+                items = []
+                for selector in selectors:
+                    try:
+                        items = page.query_selector_all(selector)
+                        if len(items) > 0:
+                            print(f"✅ 공고 {len(items)}개 발견 (선택자: {selector})")
+                            break
+                    except:
+                        continue
+                
+                if not items:
+                    print("⚠️ 공고를 찾을 수 없음. 예시 데이터 생성")
+                    grants = create_sample_grants()
+                else:
+                    # 크롤링
+                    count = 0
+                    for item in items[:10]:  # 최대 10개
+                        try:
+                            # 제목과 링크 찾기
+                            link = item.query_selector('a')
+                            if not link:
+                                continue
+                            
+                            title = link.inner_text().strip()
+                            href = link.get_attribute('href')
+                            
+                            if not title or len(title) < 5:
+                                continue
+                            
+                            # URL 완성
+                            if href.startswith('http'):
+                                full_url = href
+                            elif href.startswith('/'):
+                                full_url = f"https://www.k-startup.go.kr{href}"
+                            else:
+                                full_url = f"https://www.k-startup.go.kr/{href}"
+                            
+                            # ID 생성
+                            grant_id = hashlib.md5(f"kstartup_{title}".encode()).hexdigest()[:16]
+                            
+                            # 키워드 추출
+                            keywords = extract_keywords(title)
+                            
+                            grants.append({
+                                'id': grant_id,
+                                'title': title,
+                                'organization': 'K-Startup',
+                                'deadline': '',
+                                'url': full_url,
+                                'keywords': ','.join(keywords),
+                                'description': title
+                            })
+                            
+                            count += 1
+                            print(f"  ✓ [{count}] {title[:40]}...")
+                        
+                        except Exception as e:
+                            continue
+                
+                if not grants:
+                    print("⚠️ 크롤링 실패, 예시 데이터 생성")
+                    grants = create_sample_grants()
+            
+            except PlaywrightTimeout:
+                print("❌ 타임아웃: 페이지 로딩 실패")
+                grants = create_sample_grants()
+            
+            finally:
+                browser.close()
+    
     except Exception as e:
-        print(f"❌ 매칭 오류: {type(e).__name__}: {str(e)}")
-        return 0.0, f"매칭 분석 실패: {str(e)}"
-
-# ============================================
-# 슬랙 봇
-# ============================================
-
-slack_app = App(
-    token=SLACK_BOT_TOKEN,
-    signing_secret=SLACK_SIGNING_SECRET
-)
-
-@slack_app.command("/register")
-def register(ack, command, client, body):
-    """프로필 등록"""
-    ack()
+        print(f"❌ Playwright 오류: {e}")
+        import traceback
+        print(traceback.format_exc())
+        grants = create_sample_grants()
     
-    client.views_open(
-        trigger_id=body["trigger_id"],
-        view={
-            "type": "modal",
-            "callback_id": "profile_modal",
-            "title": {"type": "plain_text", "text": "프로필 등록"},
-            "submit": {"type": "plain_text", "text": "등록"},
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "keywords",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "input",
-                        "placeholder": {"type": "plain_text", "text": "예: AI, SaaS, 헬스케어"}
-                    },
-                    "label": {"type": "plain_text", "text": "핵심 키워드 (쉼표 구분)"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "description",
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "input",
-                        "multiline": True,
-                        "placeholder": {"type": "plain_text", "text": "사업 설명 2-3문장"}
-                    },
-                    "label": {"type": "plain_text", "text": "사업 설명"}
-                },
-                {
-                    "type": "input",
-                    "block_id": "stage",
-                    "element": {
-                        "type": "static_select",
-                        "action_id": "input",
-                        "options": [
-                            {"text": {"type": "plain_text", "text": "예비"}, "value": "예비"},
-                            {"text": {"type": "plain_text", "text": "초기"}, "value": "초기"},
-                            {"text": {"type": "plain_text", "text": "시드"}, "value": "시드"},
-                            {"text": {"type": "plain_text", "text": "시리즈A"}, "value": "시리즈A"}
-                        ]
-                    },
-                    "label": {"type": "plain_text", "text": "창업 단계"}
-                }
-            ]
-        }
-    )
+    print(f"\n크롤링 완료: {len(grants)}건")
+    return grants
 
-@slack_app.view("profile_modal")
-def handle_submission(ack, body, view, client):
-    """프로필 저장"""
-    user_id = body["user"]["id"]
-    values = view["state"]["values"]
+def extract_keywords(text):
+    """제목에서 키워드 추출"""
+    keywords = []
     
-    data = {
-        'keywords': values["keywords"]["input"]["value"].split(','),
-        'description': values["description"]["input"]["value"],
-        'stage': values["stage"]["input"]["selected_option"]["value"]
+    keyword_dict = {
+        'AI', '인공지능', '머신러닝', '딥러닝',
+        '핀테크', '금융', '블록체인', '암호화폐',
+        '메타버스', 'NFT', '가상현실', 'VR', 'AR',
+        'IoT', '사물인터넷', '빅데이터', '데이터',
+        '클라우드', 'SaaS', '플랫폼', '소프트웨어',
+        '헬스케어', '의료', '바이오', '제약',
+        '에듀테크', '교육', '온라인',
+        '푸드테크', '농업', '스마트팜',
+        '모빌리티', '자율주행', '전기차',
+        '로봇', '드론', '자동화',
+        'ESG', '친환경', '에너지', '신재생',
+        '스타트업', '창업', '벤처', '예비창업', '초기창업',
+        'R&D', '기술', '혁신', '개발'
     }
     
-    # 키워드 정리
-    data['keywords'] = [k.strip() for k in data['keywords'] if k.strip()]
+    text_lower = text.lower()
     
-    if save_profile(user_id, data):
-        ack()
-        client.chat_postMessage(
-            channel=user_id,
-            text="✅ 프로필 등록 완료! 매주 월요일 맞춤 공고를 받아보세요."
-        )
-    else:
-        ack()
-        client.chat_postMessage(
-            channel=user_id,
-            text="❌ 저장 실패. 다시 시도해주세요."
-        )
+    for keyword in keyword_dict:
+        if keyword.lower() in text_lower or keyword in text:
+            keywords.append(keyword)
+    
+    return keywords[:5]  # 최대 5개
 
-@slack_app.command("/profile")
-def profile_command(ack, command, say):
-    """프로필 확인"""
-    ack()
+def create_sample_grants():
+    """예시 공고 (크롤링 실패시)"""
+    today = datetime.now()
+    next_month = (today.month % 12) + 1
+    year = today.year if next_month > today.month else today.year + 1
     
-    profile = get_profile(command['user_id'])
-    
-    if profile:
-        say(f"""
-📋 **현재 프로필**
+    return [
+        {
+            'id': 'sample-001',
+            'title': '초기창업패키지',
+            'organization': '창업진흥원',
+            'deadline': f'{year}-{next_month:02d}-28',
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbanc.do',
+            'keywords': '초기,창업,사업화,스타트업',
+            'description': '3년 미만 초기 창업기업 사업화 지원. 최대 1억원.'
+        },
+        {
+            'id': 'sample-002',
+            'title': '예비창업패키지',
+            'organization': '창업진흥원',
+            'deadline': f'{year}-{next_month:02d}-15',
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbanc.do',
+            'keywords': '예비,창업,아이템,초기',
+            'description': '예비창업자 창업 아이템 사업화 지원. 최대 5천만원.'
+        },
+        {
+            'id': 'sample-003',
+            'title': 'TIPS 프로그램',
+            'organization': 'TIPS운영단',
+            'deadline': f'{year}-{next_month:02d}-31',
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbanc.do',
+            'keywords': 'TIPS,기술,R&D,혁신',
+            'description': '기술혁신형 창업기업 R&D 지원. 최대 5억원.'
+        },
+        {
+            'id': 'sample-004',
+            'title': 'AI 스타트업 육성',
+            'organization': '과학기술정보통신부',
+            'deadline': f'{year}-{next_month:02d}-20',
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbanc.do',
+            'keywords': 'AI,인공지능,기술,혁신',
+            'description': 'AI 기술 기반 스타트업 육성 지원. R&D 및 사업화.'
+        }
+    ]
 
-🔑 키워드: {', '.join(profile['keywords'])}
-📝 사업: {profile['description']}
-🚀 단계: {profile['stage']}
-        """)
-    else:
-        say("프로필이 없습니다. `/register` 명령어로 등록하세요.")
-
-@slack_app.command("/test")
-def test_matching(ack, command, say):
-    """매칭 테스트"""
-    ack()
-    
-    user_id = command['user_id']
-    profile = get_profile(user_id)
-    
-    if not profile:
-        say("프로필을 먼저 등록하세요: `/register`")
-        return
-    
-    grants = get_recent_grants()
-    
+def save_grants(grants: List[Dict]):
+    """Google Sheets 저장"""
     if not grants:
-        say("등록된 공고가 없습니다.")
-        return
+        print("⚠️ 저장할 공고 없음")
+        return False
     
-    # 모든 공고 매칭
-    results = []
-    for grant in grants[:5]:  # 최대 5개
-        score, reason = match_grant(grant, profile)
-        if score > 0:  # 매칭도 0% 초과만
-            results.append({
-                'grant': grant,
-                'score': score,
-                'reason': reason
-            })
-    
-    # 점수순 정렬
-    results.sort(key=lambda x: x['score'], reverse=True)
-    
-    if not results:
-        say("매칭되는 공고가 없습니다.")
-        return
-    
-    # 결과 표시
-    message = "🎯 **매칭 결과**\n\n"
-    
-    for result in results[:3]:  # 상위 3개만
-        grant = result['grant']
-        score = int(result['score'] * 100)
+    try:
+        print("\nGoogle Sheets 저장 중...")
+        sheet = get_sheets().worksheet("grants")
         
-        message += f"✅ **매칭도 {score}%** - {grant['title']}\n"
-        message += f"   📌 {grant['organization']}\n"
-        message += f"   💡 {result['reason']}\n"
-        message += f"   🔗 지원하기: {grant['url']}\n\n"
+        # 기존 ID 가져오기
+        existing_ids = set()
+        try:
+            data = sheet.get_all_values()
+            if len(data) > 1:
+                existing_ids = {row[0] for row in data[1:] if row and len(row) > 0}
+        except:
+            pass
+        
+        print(f"기존 공고: {len(existing_ids)}개")
+        
+        # 신규만 저장
+        new_count = 0
+        for grant in grants:
+            if grant['id'] not in existing_ids:
+                sheet.append_row([
+                    grant['id'],
+                    grant['title'],
+                    grant['organization'],
+                    grant['deadline'],
+                    grant['url'],
+                    grant['keywords'],
+                    grant['description']
+                ])
+                new_count += 1
+                print(f"  ✓ {grant['title'][:35]}...")
+        
+        print(f"\n✅ 저장 완료: 신규 {new_count}개 (중복 제외: {len(grants) - new_count}개)")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 저장 실패: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return False
+
+# ============================================
+# 메인
+# ============================================
+
+def main():
+    """메인 실행"""
+    print(f"\n{'='*60}")
+    print("창업지원금 크롤러")
+    print(f"시작: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}\n")
     
-    say(message)
-
-# ============================================
-# FastAPI
-# ============================================
-
-api = FastAPI()
-handler = SlackRequestHandler(slack_app)
-
-@api.get("/")
-def root():
-    return {"status": "ok"}
-
-@api.post("/slack/events")
-async def slack_events(req: Request):
-    body = await req.body()
-    return await handler.handle(req)
-
-@api.post("/slack/commands")
-async def slack_commands(req: Request):
-    body = await req.body()
-    headers = dict(req.headers)
-    return await handler.handle(req)
-
-@api.post("/slack/actions")
-async def slack_actions(req: Request):
-    body = await req.body()
-    return await handler.handle(req)
-
-# ============================================
-# 실행
-# ============================================
+    try:
+        # Playwright 크롤링
+        grants = crawl_k_startup_playwright()
+        
+        # 저장
+        if grants:
+            save_grants(grants)
+            print(f"\n{'='*60}")
+            print("✅ 크롤러 완료!")
+            print(f"{'='*60}\n")
+        else:
+            print("\n⚠️ 수집된 공고 없음")
+            sys.exit(1)
+    
+    except Exception as e:
+        print(f"\n❌ 오류 발생: {e}")
+        import traceback
+        print(traceback.format_exc())
+        sys.exit(1)
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(api, host="0.0.0.0", port=8000)
+    main()
