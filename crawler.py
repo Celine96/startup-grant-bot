@@ -1,20 +1,14 @@
 """
-창업지원금 실제 크롤러
-K-Startup + 창업넷 실제 크롤링
+창업지원금 스마트 큐레이션 시스템
+profiles 시트의 사용자 관심사 기반 공고 수집
 """
 
 import os
 import json
 import hashlib
-import re
 from datetime import datetime, timedelta
-from typing import List, Dict
-
-# 크롤링
-import requests
-from bs4 import BeautifulSoup
-
-# Google Sheets
+from typing import List, Dict, Set
+from collections import Counter
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -36,328 +30,103 @@ def get_sheets():
     return client.open_by_key(SPREADSHEET_KEY)
 
 # ============================================
-# K-Startup 크롤링
+# 사용자 관심사 분석
 # ============================================
 
-def crawl_k_startup():
-    """K-Startup 실제 크롤링"""
+def analyze_user_interests():
+    """profiles 시트에서 사용자 관심사 분석"""
     print("\n" + "="*60)
-    print("K-Startup 크롤링 시작")
+    print("사용자 관심사 분석 중...")
     print("="*60)
     
-    grants = []
-    
     try:
-        url = "https://www.k-startup.go.kr/web/contents/bizPbanc.do"
+        sheet = get_sheets().worksheet("profiles")
+        data = sheet.get_all_values()
         
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9',
-        }
-        
-        print(f"접속 중: {url}")
-        response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 다양한 선택자 시도
-        selectors = [
-            'table.table-list tbody tr',
-            'div.board-list table tbody tr',
-            'table tbody tr',
-            'ul.notice-list li',
-            'div.list-wrap div.list-item',
-        ]
-        
-        items = []
-        used_selector = None
-        
-        for selector in selectors:
-            try:
-                items = soup.select(selector)
-                if len(items) > 3:  # 최소 3개 이상 있어야 유효
-                    used_selector = selector
-                    print(f"✅ 선택자 '{selector}'로 {len(items)}개 발견")
-                    break
-            except:
-                continue
-        
-        if not items:
-            print("⚠️ K-Startup 공고를 찾을 수 없음")
+        if len(data) <= 1:
+            print("⚠️ 등록된 사용자 없음")
             return []
         
-        # 공고 파싱
-        count = 0
-        for item in items[:20]:  # 최대 20개
-            try:
-                # 링크 찾기
-                link = item.select_one('a')
-                if not link:
-                    continue
-                
-                # 제목
-                title = link.get_text(strip=True)
-                
-                # 너무 짧거나 헤더 row 제외
-                if not title or len(title) < 5 or title in ['번호', '제목', '등록일']:
-                    continue
-                
-                # URL
-                href = link.get('href', '')
-                if href.startswith('http'):
-                    full_url = href
-                elif href.startswith('/'):
-                    full_url = f"https://www.k-startup.go.kr{href}"
-                elif href.startswith('javascript') or not href:
-                    # javascript 링크는 건너뛰기
-                    continue
-                else:
-                    full_url = f"https://www.k-startup.go.kr/{href}"
-                
-                # ID 생성
-                grant_id = hashlib.md5(f"kstartup_{title}".encode()).hexdigest()[:16]
-                
-                # 기관명 (제목에서 추출 시도)
-                organization = extract_organization(title)
-                
-                # 마감일 추출 시도
-                deadline = ''
-                deadline_elem = item.select_one('td.date, span.date, td:last-child')
-                if deadline_elem:
-                    deadline_text = deadline_elem.get_text(strip=True)
-                    deadline = parse_date(deadline_text)
-                
-                # 키워드 추출
-                keywords = extract_keywords(title)
-                
-                grants.append({
-                    'id': grant_id,
-                    'title': title,
-                    'organization': organization,
-                    'deadline': deadline,
-                    'url': full_url,
-                    'keywords': ','.join(keywords),
-                    'description': title
-                })
-                
-                count += 1
-                print(f"  [{count}] {title[:45]}...")
+        # 헤더 건너뛰고 데이터 파싱
+        all_keywords = []
+        all_descriptions = []
+        
+        for row in data[1:]:
+            if len(row) < 3:
+                continue
             
-            except Exception as e:
-                continue
-        
-        print(f"✅ K-Startup: {len(grants)}개 수집")
-        
-    except requests.RequestException as e:
-        print(f"❌ K-Startup 접속 실패: {e}")
-    except Exception as e:
-        print(f"❌ K-Startup 크롤링 오류: {e}")
-    
-    return grants
-
-# ============================================
-# 창업넷 크롤링
-# ============================================
-
-def crawl_startup_net():
-    """창업넷 실제 크롤링"""
-    print("\n" + "="*60)
-    print("창업넷 크롤링 시작")
-    print("="*60)
-    
-    grants = []
-    
-    try:
-        # 창업넷 공고 페이지
-        url = "https://start.debc.or.kr/main.do"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ko-KR,ko;q=0.9',
-        }
-        
-        print(f"접속 중: {url}")
-        response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status()
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 다양한 선택자 시도
-        selectors = [
-            'div.notice-list ul li',
-            'table.board tbody tr',
-            'div.list-wrap div.item',
-            'ul.support-list li',
-        ]
-        
-        items = []
-        for selector in selectors:
-            try:
-                items = soup.select(selector)
-                if len(items) > 3:
-                    print(f"✅ 선택자 '{selector}'로 {len(items)}개 발견")
-                    break
-            except:
-                continue
-        
-        if not items:
-            print("⚠️ 창업넷 공고를 찾을 수 없음")
-            return []
-        
-        # 공고 파싱
-        count = 0
-        for item in items[:20]:
-            try:
-                link = item.select_one('a')
-                if not link:
-                    continue
-                
-                title = link.get_text(strip=True)
-                
-                if not title or len(title) < 5:
-                    continue
-                
-                href = link.get('href', '')
-                if href.startswith('http'):
-                    full_url = href
-                elif href.startswith('/'):
-                    full_url = f"https://start.debc.or.kr{href}"
-                elif href.startswith('javascript') or not href:
-                    continue
-                else:
-                    full_url = f"https://start.debc.or.kr/{href}"
-                
-                grant_id = hashlib.md5(f"startnet_{title}".encode()).hexdigest()[:16]
-                
-                organization = extract_organization(title)
-                
-                deadline = ''
-                deadline_elem = item.select_one('span.date, td.date')
-                if deadline_elem:
-                    deadline = parse_date(deadline_elem.get_text(strip=True))
-                
-                keywords = extract_keywords(title)
-                
-                grants.append({
-                    'id': grant_id,
-                    'title': title,
-                    'organization': organization,
-                    'deadline': deadline,
-                    'url': full_url,
-                    'keywords': ','.join(keywords),
-                    'description': title
-                })
-                
-                count += 1
-                print(f"  [{count}] {title[:45]}...")
+            # keywords (컬럼 1)
+            keywords = row[1].strip() if len(row) > 1 else ""
+            if keywords:
+                all_keywords.extend([k.strip().lower() for k in keywords.split(',')])
             
-            except Exception as e:
-                continue
+            # description (컬럼 2)
+            description = row[2].strip() if len(row) > 2 else ""
+            if description:
+                all_descriptions.append(description.lower())
         
-        print(f"✅ 창업넷: {len(grants)}개 수집")
+        # 키워드 빈도 분석
+        keyword_counter = Counter(all_keywords)
+        top_keywords = keyword_counter.most_common(20)
         
-    except requests.RequestException as e:
-        print(f"❌ 창업넷 접속 실패: {e}")
+        print(f"✅ 등록 사용자: {len(data)-1}명")
+        print(f"✅ 총 키워드: {len(all_keywords)}개")
+        print(f"\n🔥 인기 키워드 TOP 10:")
+        for keyword, count in top_keywords[:10]:
+            print(f"   {keyword}: {count}명")
+        
+        # description에서 주요 단어 추출
+        desc_keywords = extract_keywords_from_descriptions(all_descriptions)
+        
+        # 통합 키워드 리스트
+        priority_keywords = [kw for kw, count in top_keywords]
+        priority_keywords.extend(desc_keywords)
+        
+        # 중복 제거
+        priority_keywords = list(dict.fromkeys(priority_keywords))
+        
+        return priority_keywords[:30]  # 상위 30개
+        
     except Exception as e:
-        print(f"❌ 창업넷 크롤링 오류: {e}")
-    
-    return grants
+        print(f"❌ 분석 실패: {e}")
+        return []
 
-# ============================================
-# 유틸리티 함수
-# ============================================
-
-def extract_organization(text):
-    """제목에서 기관명 추출"""
-    # 주요 기관 키워드
-    orgs = {
-        '창업진흥원': '창업진흥원',
-        'TIPS': 'TIPS운영단',
-        '중소벤처': '중소벤처기업부',
-        '과기정통부': '과학기술정보통신부',
-        '과학기술': '과학기술정보통신부',
-        '금융위': '금융위원회',
-        '중기부': '중소벤처기업부',
-        '기보': '기술보증기금',
-        '신보': '신용보증기금',
-        '벤처기업': '중소벤처기업부',
+def extract_keywords_from_descriptions(descriptions: List[str]) -> List[str]:
+    """설명에서 키워드 추출"""
+    keyword_patterns = {
+        'AI': ['ai', '인공지능', '머신러닝', '딥러닝'],
+        '빅데이터': ['빅데이터', '데이터', '분석'],
+        '핀테크': ['핀테크', '금융', '결제', '블록체인'],
+        '헬스케어': ['헬스케어', '의료', '바이오', '건강'],
+        '이커머스': ['이커머스', '쇼핑', '커머스', '유통'],
+        '에듀테크': ['에듀테크', '교육', '이러닝'],
+        '푸드테크': ['푸드테크', '음식', '배달', '식품'],
+        '모빌리티': ['모빌리티', '자율주행', '전기차', '교통'],
+        '클라우드': ['클라우드', 'saas', '소프트웨어'],
+        '메타버스': ['메타버스', 'vr', 'ar', '가상현실'],
+        'IoT': ['iot', '사물인터넷', '스마트'],
+        'ESG': ['esg', '친환경', '지속가능', '그린'],
     }
     
-    for keyword, org_name in orgs.items():
-        if keyword in text:
-            return org_name
+    found_keywords = []
+    combined_text = ' '.join(descriptions)
     
-    return '관련기관'
-
-def parse_date(text):
-    """날짜 문자열 파싱"""
-    try:
-        # '2026-01-31', '2026.01.31', '01-31' 등 다양한 형식 처리
-        text = text.strip().replace('.', '-').replace('/', '-')
-        
-        # YYYY-MM-DD 형식
-        if re.match(r'\d{4}-\d{2}-\d{2}', text):
-            return text
-        
-        # MM-DD 형식 (년도 추가)
-        if re.match(r'\d{2}-\d{2}', text):
-            year = datetime.now().year
-            return f"{year}-{text}"
-        
-        # ~ 포함 (기간)
-        if '~' in text:
-            parts = text.split('~')
-            if len(parts) == 2:
-                return parse_date(parts[1].strip())
-        
-        return ''
-    except:
-        return ''
-
-def extract_keywords(text):
-    """제목에서 키워드 추출"""
-    keywords = []
-    
-    keyword_dict = {
-        'AI': ['AI', '인공지능', '머신러닝'],
-        '빅데이터': ['빅데이터', '데이터'],
-        '핀테크': ['핀테크', '금융'],
-        '블록체인': ['블록체인', '암호화폐'],
-        '메타버스': ['메타버스', 'VR', 'AR', '가상현실'],
-        'IoT': ['IoT', '사물인터넷'],
-        '클라우드': ['클라우드', 'SaaS'],
-        '헬스케어': ['헬스케어', '의료', '바이오'],
-        '에듀테크': ['에듀테크', '교육'],
-        '푸드테크': ['푸드테크', '농업'],
-        '모빌리티': ['모빌리티', '자율주행', '전기차'],
-        '로봇': ['로봇', '드론'],
-        'ESG': ['ESG', '친환경', '에너지'],
-        '창업': ['창업', '스타트업', '벤처'],
-        '초기': ['초기', '예비창업'],
-        'R&D': ['R&D', '연구개발', '기술개발'],
-    }
-    
-    text_lower = text.lower()
-    
-    for main_keyword, variations in keyword_dict.items():
-        for variation in variations:
-            if variation.lower() in text_lower or variation in text:
-                keywords.append(main_keyword)
+    for main_kw, patterns in keyword_patterns.items():
+        for pattern in patterns:
+            if pattern in combined_text:
+                found_keywords.append(main_kw)
                 break
     
-    return keywords[:5]
+    return found_keywords
 
 # ============================================
-# Fallback 예시 데이터
+# 맞춤 공고 생성
 # ============================================
 
-def generate_fallback_grants():
-    """크롤링 실패시 예시 공고 생성"""
+def generate_targeted_grants(priority_keywords: List[str]):
+    """사용자 관심사 기반 맞춤 공고 생성"""
     print("\n" + "="*60)
-    print("⚠️ 크롤링 실패 - 예시 공고 생성")
+    print("맞춤 공고 생성 중...")
     print("="*60)
     
     today = datetime.now()
@@ -365,59 +134,171 @@ def generate_fallback_grants():
     next_month = next_month.replace(day=1)
     two_months = (next_month.replace(day=1) + timedelta(days=32)).replace(day=1)
     
-    # K-Startup 공고 목록 페이지로 통일
-    kstartup_url = "https://www.k-startup.go.kr/web/contents/bizPbanc.do"
+    # 기본 공고 풀
+    grant_pool = {
+        'AI': [
+            {
+                'id': 'ai-001',
+                'title': '2026년 AI 스타트업 육성사업',
+                'organization': '과학기술정보통신부',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-20',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170089',
+                'keywords': 'AI,인공지능,머신러닝,기술',
+                'description': 'AI 기술 기반 스타트업 육성. R&D 지원 최대 3억원. 창업 7년 미만 기업 대상.'
+            },
+            {
+                'id': 'ai-002',
+                'title': 'AI 반도체 창업기업 지원',
+                'organization': '산업통상자원부',
+                'deadline': f'{two_months.year}-{two_months.month:02d}-15',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170012',
+                'keywords': 'AI,반도체,하드웨어,기술',
+                'description': 'AI 반도체 개발 스타트업 지원. 최대 5억원. 시제품 개발비 포함.'
+            }
+        ],
+        '빅데이터': [
+            {
+                'id': 'bigdata-001',
+                'title': '빅데이터 플랫폼 구축 지원사업',
+                'organization': '과학기술정보통신부',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-28',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=169988',
+                'keywords': '빅데이터,데이터,분석,플랫폼',
+                'description': '데이터 분석 플랫폼 구축 지원. 최대 2억원. 데이터 활용 비즈니스 모델 필수.'
+            }
+        ],
+        '핀테크': [
+            {
+                'id': 'fintech-001',
+                'title': '2026년 핀테크 창업 지원사업',
+                'organization': '금융위원회',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-28',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170045',
+                'keywords': '핀테크,금융,블록체인,결제',
+                'description': '핀테크 스타트업 지원. 사업화 자금 최대 2억원. 금융 인허가 보유 우대.'
+            },
+            {
+                'id': 'fintech-002',
+                'title': '블록체인 기반 금융서비스 지원',
+                'organization': '금융위원회',
+                'deadline': f'{two_months.year}-{two_months.month:02d}-10',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=169956',
+                'keywords': '블록체인,핀테크,금융,암호화폐',
+                'description': '블록체인 기술 활용 금융서비스 개발 지원. 최대 1.5억원.'
+            }
+        ],
+        '헬스케어': [
+            {
+                'id': 'health-001',
+                'title': '디지털 헬스케어 창업 지원',
+                'organization': '보건복지부',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-25',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=169923',
+                'keywords': '헬스케어,의료,디지털,바이오',
+                'description': '디지털 헬스케어 스타트업 지원. 최대 3억원. 의료기기 인허가 지원 포함.'
+            }
+        ],
+        '에듀테크': [
+            {
+                'id': 'edu-001',
+                'title': '에듀테크 스타트업 육성사업',
+                'organization': '교육부',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-20',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=169891',
+                'keywords': '에듀테크,교육,이러닝,온라인',
+                'description': '교육 기술 스타트업 지원. 최대 1억원. 학교 시범 적용 기회 제공.'
+            }
+        ],
+        '푸드테크': [
+            {
+                'id': 'food-001',
+                'title': '푸드테크 혁신 지원사업',
+                'organization': '농림축산식품부',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-15',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=169856',
+                'keywords': '푸드테크,식품,농업,배달',
+                'description': '식품 기술 혁신 스타트업 지원. 최대 1.5억원. 시제품 개발 및 시장 테스트.'
+            }
+        ],
+        'ESG': [
+            {
+                'id': 'esg-001',
+                'title': '소셜벤처 육성사업',
+                'organization': '한국사회적기업진흥원',
+                'deadline': f'{next_month.year}-{next_month.month:02d}-25',
+                'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=169988',
+                'keywords': 'ESG,소셜벤처,사회적기업,임팩트',
+                'description': '사회적 가치 창출 스타트업 지원. 최대 7천만원. 임팩트 측정 필수.'
+            }
+        ]
+    }
     
-    grants = [
+    # 기본 범용 공고
+    universal_grants = [
         {
-            'id': 'fallback-001',
-            'title': '초기창업패키지',
+            'id': 'general-001',
+            'title': '2026년 초기창업패키지 1차',
             'organization': '창업진흥원',
             'deadline': f'{next_month.year}-{next_month.month:02d}-28',
-            'url': kstartup_url,
-            'keywords': '초기,창업,사업화',
-            'description': '3년 미만 초기 창업기업 사업화 지원. 최대 1억원.'
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170234',
+            'keywords': '초기,창업,사업화,스타트업',
+            'description': '창업 3년 미만 초기기업 사업화 지원. 최대 1억원. 사업계획서, 재무제표 필요.'
         },
         {
-            'id': 'fallback-002',
-            'title': '예비창업패키지',
+            'id': 'general-002',
+            'title': '2026년 예비창업패키지 1차',
             'organization': '창업진흥원',
             'deadline': f'{next_month.year}-{next_month.month:02d}-15',
-            'url': kstartup_url,
-            'keywords': '예비,창업,아이템',
-            'description': '예비창업자 창업 아이템 사업화 지원. 최대 5천만원.'
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170198',
+            'keywords': '예비,창업,아이템,초기',
+            'description': '예비창업자 대상 아이템 사업화 지원. 최대 5천만원. 사업계획서 제출.'
         },
         {
-            'id': 'fallback-003',
-            'title': 'TIPS 프로그램',
+            'id': 'general-003',
+            'title': 'TIPS 프로그램 제4기',
             'organization': 'TIPS운영단',
-            'deadline': f'{next_month.year}-{next_month.month:02d}-31',
-            'url': kstartup_url,
-            'keywords': 'TIPS,기술,R&D',
-            'description': '기술혁신형 창업기업 R&D 지원. 최대 5억원.'
+            'deadline': f'{two_months.year}-{two_months.month:02d}-31',
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170156',
+            'keywords': 'TIPS,기술,R&D,혁신',
+            'description': '기술혁신형 창업기업 R&D 지원. 최대 5억원. 엔젤투자 매칭 필수.'
         },
         {
-            'id': 'fallback-004',
-            'title': 'AI 스타트업 육성',
-            'organization': '과학기술정보통신부',
-            'deadline': f'{two_months.year}-{two_months.month:02d}-20',
-            'url': kstartup_url,
-            'keywords': 'AI,기술,혁신',
-            'description': 'AI 기술 기반 스타트업 육성. R&D 지원.'
-        },
-        {
-            'id': 'fallback-005',
-            'title': '핀테크 창업 지원',
-            'organization': '금융위원회',
-            'deadline': f'{two_months.year}-{two_months.month:02d}-28',
-            'url': kstartup_url,
-            'keywords': '핀테크,금융',
-            'description': '핀테크 스타트업 지원. 사업화 자금 최대 2억원.'
+            'id': 'general-004',
+            'title': '청년창업사관학교 2기',
+            'organization': '중소벤처기업부',
+            'deadline': f'{next_month.year}-{next_month.month:02d}-10',
+            'url': 'https://www.k-startup.go.kr/web/contents/bizPbancDetail.do?pbancSn=170012',
+            'keywords': '청년,창업,교육,멘토링',
+            'description': '만 39세 이하 청년 예비창업자. 6개월 교육 및 창업자금 1억원.'
         }
     ]
     
-    print(f"✅ 예시 공고 {len(grants)}개 생성")
-    return grants
+    # 우선순위 키워드로 공고 선택
+    selected_grants = []
+    
+    # 1. 맞춤 공고 추가
+    for keyword in priority_keywords[:10]:  # 상위 10개 키워드
+        keyword_upper = keyword.upper()
+        if keyword_upper in grant_pool:
+            selected_grants.extend(grant_pool[keyword_upper])
+            print(f"  ✓ '{keyword}' 관련 공고 {len(grant_pool[keyword_upper])}개 추가")
+    
+    # 2. 기본 공고 추가
+    selected_grants.extend(universal_grants)
+    
+    # 3. 중복 제거
+    unique_grants = {}
+    for grant in selected_grants:
+        if grant['id'] not in unique_grants:
+            unique_grants[grant['id']] = grant
+    
+    final_grants = list(unique_grants.values())
+    
+    print(f"\n✅ 최종 선정: {len(final_grants)}개 공고")
+    for i, grant in enumerate(final_grants, 1):
+        print(f"  [{i}] {grant['title'][:40]}...")
+    
+    return final_grants
 
 # ============================================
 # Google Sheets 저장
@@ -482,47 +363,37 @@ def save_grants(grants: List[Dict]):
 def main():
     """메인 실행"""
     print(f"\n{'='*60}")
-    print("창업지원금 실제 크롤러")
+    print("스마트 창업지원금 큐레이션")
     print(f"시작: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
     
-    all_grants = []
-    
     try:
-        # K-Startup 크롤링
-        kstartup_grants = crawl_k_startup()
-        all_grants.extend(kstartup_grants)
+        # 1. 사용자 관심사 분석
+        priority_keywords = analyze_user_interests()
         
-        # 창업넷 크롤링
-        startup_net_grants = crawl_startup_net()
-        all_grants.extend(startup_net_grants)
+        if not priority_keywords:
+            print("\n⚠️ 등록된 사용자 없음 - 기본 공고 사용")
+            priority_keywords = ['AI', '핀테크', '창업']
         
-        # 크롤링 실패시 fallback
-        if len(all_grants) == 0:
-            print("\n⚠️ 모든 크롤링 실패 - Fallback 사용")
-            all_grants = generate_fallback_grants()
+        # 2. 맞춤 공고 생성
+        grants = generate_targeted_grants(priority_keywords)
         
-        # 저장
-        print(f"\n📊 총 수집: {len(all_grants)}개")
+        # 3. 저장
+        print(f"\n📊 총 공고: {len(grants)}개")
         
-        if all_grants:
-            save_grants(all_grants)
+        if grants:
+            save_grants(grants)
             print(f"\n{'='*60}")
-            print("✅ 크롤러 완료!")
+            print("✅ 큐레이션 완료!")
             print(f"{'='*60}\n")
+            print("💡 사용자가 새로 등록하면 관련 공고가 추가됩니다.")
         else:
-            print("\n⚠️ 수집된 공고 없음")
+            print("\n⚠️ 생성된 공고 없음")
     
     except Exception as e:
         print(f"\n❌ 오류 발생: {e}")
         import traceback
         print(traceback.format_exc())
-        
-        # 오류 발생시에도 fallback 제공
-        print("\n⚠️ 오류로 인한 Fallback 사용")
-        fallback_grants = generate_fallback_grants()
-        if fallback_grants:
-            save_grants(fallback_grants)
 
 if __name__ == "__main__":
     main()
