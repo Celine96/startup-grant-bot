@@ -9,7 +9,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 
-from config import BIZINFO_API_URL, KSTARTUP_API_URL, KSTARTUP_WEB_URL
+from config import BIZINFO_API_URL, KSTARTUP_API_URL, KSTARTUP_WEB_URL, MSS_API_URL, SMES_API_URL
 
 
 def fetch_all_grants() -> list[dict]:
@@ -32,6 +32,24 @@ def fetch_all_grants() -> list[dict]:
             print(f"  K-Startup: {len(kstartup_grants)}건 수집")
         except Exception as e:
             print(f"  K-Startup API 실패: {e}")
+
+    if os.getenv('MSS_API_KEY'):
+        print("중소벤처기업부 사업공고 API로 수집 중...")
+        try:
+            mss_grants = fetch_from_mss()
+            grants.extend(mss_grants)
+            print(f"  중기부: {len(mss_grants)}건 수집")
+        except Exception as e:
+            print(f"  중기부 API 실패: {e}")
+
+    if os.getenv('SMES_API_KEY'):
+        print("중소벤처24 공고정보 API로 수집 중...")
+        try:
+            smes_grants = fetch_from_smes()
+            grants.extend(smes_grants)
+            print(f"  중소벤처24: {len(smes_grants)}건 수집")
+        except Exception as e:
+            print(f"  중소벤처24 API 실패: {e}")
 
     if not grants:
         print("API 키 없음 - 웹 스크래핑 fallback 사용...")
@@ -146,6 +164,93 @@ def normalize_grant_kstartup(raw: dict) -> dict:
         'url': raw.get('biz_aply_url', '') or raw.get('detl_pg_url', ''),
         'keywords': raw.get('supt_biz_clsfc', ''),
         'description': (raw.get('pbanc_ctnt', '') or raw.get('aply_trgt_ctnt', ''))[:500],
+    }
+
+
+def fetch_from_mss() -> list[dict]:
+    """중소벤처기업부 사업공고 API (XML 응답)"""
+    api_key = os.getenv('MSS_API_KEY')
+    grants = []
+    page = 1
+
+    while True:
+        resp = requests.get(MSS_API_URL, params={
+            'serviceKey': api_key,
+            'pageNo': page,
+            'numOfRows': 50,
+        }, timeout=30)
+        resp.raise_for_status()
+
+        soup = BeautifulSoup(resp.text, 'xml')
+        items = soup.find_all('item')
+        if not items:
+            break
+
+        for item in items:
+            grants.append(normalize_grant_mss(item))
+
+        total_count = soup.find('totalCount')
+        total = int(total_count.text) if total_count else 0
+        if page * 50 >= total:
+            break
+        page += 1
+
+    return grants
+
+
+def normalize_grant_mss(item) -> dict:
+    """중기부 사업공고 XML 항목을 표준 스키마로 변환"""
+    def get_text(tag_name):
+        tag = item.find(tag_name)
+        return tag.text.strip() if tag and tag.text else ''
+
+    description = get_text('dataContents')
+    description = re.sub(r'<[^>]+>', '', description).strip()
+
+    return {
+        'id': f"mss-{get_text('itemId')}",
+        'title': get_text('title'),
+        'organization': get_text('writerPosition'),
+        'deadline': get_text('applicationEndDate'),
+        'url': get_text('viewUrl'),
+        'keywords': '',
+        'description': description[:500],
+    }
+
+
+def fetch_from_smes() -> list[dict]:
+    """중소벤처24 공고정보 API"""
+    api_key = os.getenv('SMES_API_KEY')
+    grants = []
+
+    resp = requests.get(SMES_API_URL, params={
+        'apiKey': api_key,
+    }, headers={
+        'Accept': 'application/json',
+    }, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    items = data if isinstance(data, list) else data.get('data', data.get('items', []))
+    if not isinstance(items, list):
+        return grants
+
+    for item in items:
+        grants.append(normalize_grant_smes(item))
+
+    return grants
+
+
+def normalize_grant_smes(raw: dict) -> dict:
+    """중소벤처24 공고 항목을 표준 스키마로 변환"""
+    return {
+        'id': f"smes-{raw.get('id', raw.get('pblancId', ''))}",
+        'title': raw.get('pblancNm', raw.get('title', '')),
+        'organization': raw.get('jrsdInsttNm', raw.get('organization', '')),
+        'deadline': raw.get('endDt', raw.get('applicationEndDate', '')),
+        'url': raw.get('detailUrl', raw.get('url', '')),
+        'keywords': raw.get('category', ''),
+        'description': (raw.get('description', raw.get('pblancCtnt', '')))[:500],
     }
 
 

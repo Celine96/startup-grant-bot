@@ -33,3 +33,7 @@ services:
         sync: false
       - key: KSTARTUP_API_KEY
         sync: false
+      - key: MSS_API_KEY
+        sync: false
+      - key: SMES_API_KEY
+        sync: false

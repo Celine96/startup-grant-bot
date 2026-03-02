@@ -17,6 +17,8 @@ STAGE_OPTIONS = ['예비', '초기', '시드', '시리즈A']
 BIZINFO_API_URL = 'https://www.bizinfo.go.kr/uss/rss/bizinfoApi.do'
 KSTARTUP_API_URL = 'https://apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementInformation01'
 KSTARTUP_WEB_URL = 'https://www.k-startup.go.kr/web/contents/bizpbanc-ongoing.do'
+MSS_API_URL = 'https://apis.data.go.kr/1421000/mssBizService_v2/getbizList_v2'
+SMES_API_URL = 'https://www.smes.go.kr/fnct/apiReqst/extPblancInfo'
 
 # Google Sheets API 스코프
 SHEETS_SCOPES = [
