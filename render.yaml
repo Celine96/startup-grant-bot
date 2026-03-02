@@ -14,7 +14,7 @@ services:
         sync: false
       - key: GOOGLE_SHEETS_CREDENTIALS
         sync: false
-  
+
   # 크롤러 (매주 일요일 자정)
   - type: cron
     name: crawler
@@ -26,4 +26,14 @@ services:
       - key: SPREADSHEET_KEY
         sync: false
       - key: GOOGLE_SHEETS_CREDENTIALS
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: BIZINFO_API_KEY
+        sync: false
+      - key: KSTARTUP_API_KEY
+        sync: false
+      - key: MSS_API_KEY
+        sync: false
+      - key: SMES_API_KEY
         sync: false
