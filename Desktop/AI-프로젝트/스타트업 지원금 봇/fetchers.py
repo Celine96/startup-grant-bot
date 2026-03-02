@@ -159,14 +159,14 @@ def fetch_from_web_scraping() -> list[dict]:
     for page in range(1, 4):
         resp = requests.get(
             KSTARTUP_WEB_URL,
-            params={'pageIndex': page},
+            params={'page': page},
             headers=headers,
             timeout=30,
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        items = soup.select('div.board_list-wrap div.list_wrap > a')
+        items = soup.select('div.board_list-wrap > ul > li')
         if not items:
             break
 
@@ -181,40 +181,44 @@ def fetch_from_web_scraping() -> list[dict]:
 def parse_web_item(item) -> dict | None:
     """HTML 공고 항목 파싱"""
     try:
-        href = item.get('href', '')
+        # 공고 ID 추출 (div.middle 안의 <a> 태그에서)
+        a_tag = item.select_one('div.middle a')
+        if not a_tag:
+            return None
+        href = a_tag.get('href', '')
         pbanc_sn_match = re.search(r'go_view\((\d+)\)', href)
-        if not pbanc_sn_match:
-            pbanc_sn_match = re.search(r'pbancSn=(\d+)', href)
         if not pbanc_sn_match:
             return None
         pbanc_sn = pbanc_sn_match.group(1)
 
-        title_el = item.select_one('p.tit')
+        # 제목
+        title_el = item.select_one('div.middle p.tit')
         title = title_el.get_text(strip=True) if title_el else ''
-
         if not title:
             return None
 
-        # 마감일 추출
-        deadline = ''
-        deadline_el = item.select_one('.right .txt')
-        if deadline_el:
-            text = deadline_el.get_text(strip=True)
-            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
-            if date_match:
-                deadline = date_match.group(1)
-
-        # 기관명, 프로그램명
-        li_items = item.select('.ann_cont ul li')
-        organization = ''
+        # div.bottom > span.list 에서 메타데이터 추출
+        list_items = item.select('div.bottom span.list')
         program = ''
-        if len(li_items) >= 2:
-            program = li_items[0].get_text(strip=True)
-            organization = li_items[1].get_text(strip=True)
+        organization = ''
+        deadline = ''
+
+        for span in list_items:
+            text = span.get_text(strip=True)
+            if '마감일자' in text:
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+                if date_match:
+                    deadline = date_match.group(1)
+            elif '등록일자' in text or '시작일자' in text or '조회' in text:
+                continue
+            elif not program:
+                program = text
+            elif not organization:
+                organization = text
 
         # 카테고리
         category = ''
-        flag_el = item.select_one('.flag.type01, .flag:not(.day)')
+        flag_el = item.select_one('div.top span.flag:not(.day)')
         if flag_el:
             category = flag_el.get_text(strip=True)
 
