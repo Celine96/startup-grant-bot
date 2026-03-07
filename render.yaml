@@ -15,11 +15,11 @@ services:
       - key: GOOGLE_SHEETS_CREDENTIALS
         sync: false
 
-  # 크롤러 (매주 일요일 자정)
+  # 크롤러 (매일 자정)
   - type: cron
     name: crawler
     env: python
-    schedule: "0 15 * * 0"  # 일요일 15:00 UTC = 월요일 00:00 KST
+    schedule: "0 15 * * *"  # 매일 15:00 UTC = 매일 00:00 KST
     buildCommand: pip install -r requirements.txt
     startCommand: python crawler.py
     envVars:
