@@ -179,6 +179,9 @@ def fetch_from_mss() -> list[dict]:
             'pageNo': page,
             'numOfRows': 50,
         }, timeout=30)
+        if resp.status_code >= 500:
+            print(f"  중기부 API 서버 오류 (page {page}), 수집된 데이터로 계속 진행")
+            break
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, 'xml')

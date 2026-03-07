@@ -123,23 +123,17 @@ def save_grants(grants: List[dict]) -> int:
             print(f"공고 저장 완료: 신규 0개 (기존 {len(existing_ids)}개, 전체 중복)")
             return 0
 
-        # 배치 저장 (Google Sheets 분당 60회 쓰기 제한 회피)
-        BATCH_SIZE = 50
-        new_count = 0
-        for i in range(0, len(new_grants), BATCH_SIZE):
-            batch = new_grants[i:i + BATCH_SIZE]
-            rows = [
-                [
-                    g['id'], g['title'], g['organization'],
-                    g['deadline'], g['url'],
-                    g.get('keywords', ''), g.get('description', '')
-                ]
-                for g in batch
+        # 전체를 한 번의 API 호출로 저장 (rate limit 회피)
+        rows = [
+            [
+                g['id'], g['title'], g['organization'],
+                g['deadline'], g['url'],
+                g.get('keywords', ''), g.get('description', '')
             ]
-            sheet.append_rows(rows)
-            new_count += len(batch)
-            if i + BATCH_SIZE < len(new_grants):
-                time.sleep(2)
+            for g in new_grants
+        ]
+        sheet.append_rows(rows, value_input_option='RAW')
+        new_count = len(new_grants)
 
         print(f"공고 저장 완료: 신규 {new_count}개 (기존 {len(existing_ids)}개, 중복 제외 {len(grants) - new_count}개)")
         return new_count
