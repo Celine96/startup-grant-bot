@@ -4,6 +4,7 @@ Google Sheets CRUD 모듈
 
 import os
 import json
+import time
 from typing import List
 
 import gspread
@@ -116,19 +117,29 @@ def save_grants(grants: List[dict]) -> int:
         except Exception:
             pass
 
+        # 신규 공고만 필터링
+        new_grants = [g for g in grants if g['id'] not in existing_ids]
+        if not new_grants:
+            print(f"공고 저장 완료: 신규 0개 (기존 {len(existing_ids)}개, 전체 중복)")
+            return 0
+
+        # 배치 저장 (Google Sheets 분당 60회 쓰기 제한 회피)
+        BATCH_SIZE = 50
         new_count = 0
-        for grant in grants:
-            if grant['id'] not in existing_ids:
-                sheet.append_row([
-                    grant['id'],
-                    grant['title'],
-                    grant['organization'],
-                    grant['deadline'],
-                    grant['url'],
-                    grant.get('keywords', ''),
-                    grant.get('description', '')
-                ])
-                new_count += 1
+        for i in range(0, len(new_grants), BATCH_SIZE):
+            batch = new_grants[i:i + BATCH_SIZE]
+            rows = [
+                [
+                    g['id'], g['title'], g['organization'],
+                    g['deadline'], g['url'],
+                    g.get('keywords', ''), g.get('description', '')
+                ]
+                for g in batch
+            ]
+            sheet.append_rows(rows)
+            new_count += len(batch)
+            if i + BATCH_SIZE < len(new_grants):
+                time.sleep(2)
 
         print(f"공고 저장 완료: 신규 {new_count}개 (기존 {len(existing_ids)}개, 중복 제외 {len(grants) - new_count}개)")
         return new_count
