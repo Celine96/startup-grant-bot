@@ -4,6 +4,7 @@ Google Sheets CRUD 모듈
 
 import os
 import json
+import re
 import time
 from typing import List
 
@@ -108,17 +109,27 @@ def save_grants(grants: List[dict]) -> int:
     try:
         sheet = get_sheets().worksheet("grants")
 
-        # 기존 ID 가져오기
+        # 기존 ID + 제목 가져오기
         existing_ids = set()
+        existing_titles = set()
         try:
             data = sheet.get_all_values()
             if len(data) > 1:
-                existing_ids = {row[0] for row in data[1:] if row}
+                for row in data[1:]:
+                    if row:
+                        existing_ids.add(row[0])
+                        if len(row) > 1 and row[1]:
+                            existing_titles.add(re.sub(r'\s+', '', row[1]).lower())
         except Exception:
             pass
 
-        # 신규 공고만 필터링
-        new_grants = [g for g in grants if g['id'] not in existing_ids]
+        # 신규 공고만 필터링 (ID + 제목 중복 체크)
+        new_grants = []
+        for g in grants:
+            normalized_title = re.sub(r'\s+', '', g['title']).lower()
+            if g['id'] not in existing_ids and normalized_title not in existing_titles:
+                new_grants.append(g)
+                existing_titles.add(normalized_title)
         if not new_grants:
             print(f"공고 저장 완료: 신규 0개 (기존 {len(existing_ids)}개, 전체 중복)")
             return 0

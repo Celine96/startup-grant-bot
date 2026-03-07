@@ -59,7 +59,26 @@ def fetch_all_grants() -> list[dict]:
         except Exception as e:
             print(f"  웹 스크래핑 실패: {e}")
 
+    # 소스 간 제목 기반 중복 제거
+    before = len(grants)
+    grants = deduplicate_grants(grants)
+    if before != len(grants):
+        print(f"  소스 간 중복 제거: {before}건 → {len(grants)}건 ({before - len(grants)}건 제거)")
+
     return grants
+
+
+def deduplicate_grants(grants: list[dict]) -> list[dict]:
+    """제목 기반 중복 제거 (먼저 수집된 소스 우선)"""
+    seen_titles = set()
+    unique = []
+    for grant in grants:
+        # 공백/특수문자 제거 후 비교
+        normalized = re.sub(r'\s+', '', grant['title']).lower()
+        if normalized and normalized not in seen_titles:
+            seen_titles.add(normalized)
+            unique.append(grant)
+    return unique
 
 
 def fetch_from_bizinfo() -> list[dict]:
