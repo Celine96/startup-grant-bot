@@ -2,42 +2,57 @@
 창업지원금 매칭 슬랙봇
 """
 
-import os
+import json
 
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
+from slack_bolt.oauth.oauth_settings import OAuthSettings
 from fastapi import FastAPI, Request
 
 from db import save_profile, get_profile, get_recent_grants
 from matcher import match_grant
-from config import MAX_MATCH_RESULTS
+from config import (
+    MAX_MATCH_RESULTS,
+    SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_SIGNING_SECRET, SLACK_SCOPES,
+)
+from oauth_store import GoogleSheetsInstallationStore, InMemoryOAuthStateStore
 
 # ============================================
 # 설정
 # ============================================
 
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
+installation_store = GoogleSheetsInstallationStore()
+
+slack_app = App(
+    signing_secret=SLACK_SIGNING_SECRET,
+    installation_store=installation_store,
+    oauth_settings=OAuthSettings(
+        client_id=SLACK_CLIENT_ID,
+        client_secret=SLACK_CLIENT_SECRET,
+        scopes=SLACK_SCOPES,
+        state_store=InMemoryOAuthStateStore(),
+        install_path="/slack/install",
+        redirect_uri_path="/slack/oauth_redirect",
+    ),
+)
 
 # ============================================
 # 슬랙 봇
 # ============================================
-
-slack_app = App(
-    token=SLACK_BOT_TOKEN,
-    signing_secret=SLACK_SIGNING_SECRET
-)
 
 @slack_app.command("/register")
 def register(ack, command, client, body):
     """프로필 등록"""
     ack()
 
+    team_id = command['team_id']
+
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
             "type": "modal",
             "callback_id": "profile_modal",
+            "private_metadata": json.dumps({"team_id": team_id}),
             "title": {"type": "plain_text", "text": "프로필 등록"},
             "submit": {"type": "plain_text", "text": "등록"},
             "blocks": [
@@ -85,6 +100,8 @@ def register(ack, command, client, body):
 def handle_submission(ack, body, view, client):
     """프로필 저장"""
     user_id = body["user"]["id"]
+    metadata = json.loads(view.get("private_metadata", "{}"))
+    team_id = metadata.get("team_id", body.get("team", {}).get("id", ""))
     values = view["state"]["values"]
 
     data = {
@@ -95,7 +112,7 @@ def handle_submission(ack, body, view, client):
 
     data['keywords'] = [k.strip() for k in data['keywords'] if k.strip()]
 
-    if save_profile(user_id, data):
+    if save_profile(user_id, team_id, data):
         ack()
         client.chat_postMessage(
             channel=user_id,
@@ -113,7 +130,8 @@ def profile_command(ack, command, say):
     """프로필 확인"""
     ack()
 
-    profile = get_profile(command['user_id'])
+    team_id = command['team_id']
+    profile = get_profile(command['user_id'], team_id)
 
     if profile:
         say(
@@ -131,7 +149,8 @@ def test_matching(ack, command, say):
     ack()
 
     user_id = command['user_id']
-    profile = get_profile(user_id)
+    team_id = command['team_id']
+    profile = get_profile(user_id, team_id)
 
     if not profile:
         say("프로필을 먼저 등록하세요: `/register`")
@@ -193,6 +212,15 @@ async def slack_commands(req: Request):
 
 @api.post("/slack/actions")
 async def slack_actions(req: Request):
+    return await handler.handle(req)
+
+# OAuth 라우트 (slack_bolt 자동 처리)
+@api.get("/slack/install")
+async def slack_install(req: Request):
+    return await handler.handle(req)
+
+@api.get("/slack/oauth_redirect")
+async def slack_oauth_redirect(req: Request):
     return await handler.handle(req)
 
 # ============================================

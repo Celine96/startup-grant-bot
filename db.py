@@ -6,6 +6,7 @@ import os
 import json
 import re
 import time
+from datetime import datetime
 from typing import List
 
 import gspread
@@ -24,11 +25,96 @@ def get_sheets() -> gspread.Spreadsheet:
     return client.open_by_key(SPREADSHEET_KEY)
 
 
-def save_profile(user_id: str, data: dict) -> bool:
-    """프로필 저장 (존재하면 업데이트, 없으면 추가)"""
+# ============================================
+# Installations CRUD
+# ============================================
+
+def save_installation(team_id: str, data: dict) -> bool:
+    """설치 정보 저장 (존재하면 업데이트, 없으면 추가)"""
+    try:
+        sheet = get_sheets().worksheet("installations")
+        row_data = [
+            team_id,
+            data.get('team_name', ''),
+            data['bot_token'],
+            data.get('bot_user_id', ''),
+            data.get('installed_at', datetime.utcnow().isoformat()),
+        ]
+        try:
+            cell = sheet.find(team_id)
+            sheet.update(f'A{cell.row}:E{cell.row}', [row_data])
+        except gspread.exceptions.CellNotFound:
+            sheet.append_row(row_data)
+        return True
+    except Exception as e:
+        print(f"설치 정보 저장 실패: {e}")
+        return False
+
+
+def get_installation(team_id: str) -> dict | None:
+    """설치 정보 조회"""
+    try:
+        sheet = get_sheets().worksheet("installations")
+        cell = sheet.find(team_id)
+        row = sheet.row_values(cell.row)
+        return {
+            'team_id': row[0],
+            'team_name': row[1] if len(row) > 1 else '',
+            'bot_token': row[2] if len(row) > 2 else '',
+            'bot_user_id': row[3] if len(row) > 3 else '',
+            'installed_at': row[4] if len(row) > 4 else '',
+        }
+    except Exception:
+        return None
+
+
+def get_all_installations() -> list[dict]:
+    """모든 설치 정보 조회"""
+    try:
+        sheet = get_sheets().worksheet("installations")
+        data = sheet.get_all_values()
+        if len(data) <= 1:
+            return []
+
+        installations = []
+        for row in data[1:]:
+            if len(row) < 3 or not row[0]:
+                continue
+            installations.append({
+                'team_id': row[0],
+                'team_name': row[1] if len(row) > 1 else '',
+                'bot_token': row[2] if len(row) > 2 else '',
+                'bot_user_id': row[3] if len(row) > 3 else '',
+                'installed_at': row[4] if len(row) > 4 else '',
+            })
+        return installations
+    except Exception as e:
+        print(f"설치 목록 조회 실패: {e}")
+        return []
+
+
+def delete_installation(team_id: str) -> bool:
+    """설치 정보 삭제"""
+    try:
+        sheet = get_sheets().worksheet("installations")
+        cell = sheet.find(team_id)
+        sheet.delete_rows(cell.row)
+        return True
+    except Exception as e:
+        print(f"설치 정보 삭제 실패: {e}")
+        return False
+
+
+# ============================================
+# Profiles CRUD (team_id 지원)
+# ============================================
+
+def save_profile(user_id: str, team_id: str, data: dict) -> bool:
+    """프로필 저장 (team_id + user_id로 식별)"""
     try:
         sheet = get_sheets().worksheet("profiles")
         row_data = [
+            team_id,
             user_id,
             ','.join(data['keywords']),
             data['description'],
@@ -36,10 +122,11 @@ def save_profile(user_id: str, data: dict) -> bool:
             data.get('region', ''),
             ','.join(data.get('support_types', []))
         ]
-        try:
-            cell = sheet.find(user_id)
-            sheet.update(f'A{cell.row}:F{cell.row}', [row_data])
-        except gspread.exceptions.CellNotFound:
+        # team_id + user_id 조합으로 기존 행 검색
+        existing_row = _find_profile_row(sheet, user_id, team_id)
+        if existing_row:
+            sheet.update(f'A{existing_row}:G{existing_row}', [row_data])
+        else:
             sheet.append_row(row_data)
         return True
     except Exception as e:
@@ -47,26 +134,21 @@ def save_profile(user_id: str, data: dict) -> bool:
         return False
 
 
-def get_profile(user_id: str) -> dict | None:
-    """프로필 조회"""
+def get_profile(user_id: str, team_id: str) -> dict | None:
+    """프로필 조회 (team_id + user_id)"""
     try:
         sheet = get_sheets().worksheet("profiles")
-        cell = sheet.find(user_id)
-        row = sheet.row_values(cell.row)
-        return {
-            'user_id': row[0],
-            'keywords': row[1].split(',') if row[1] else [],
-            'description': row[2],
-            'stage': row[3],
-            'region': row[4] if len(row) > 4 else '',
-            'support_types': row[5].split(',') if len(row) > 5 and row[5] else []
-        }
+        row_num = _find_profile_row(sheet, user_id, team_id)
+        if not row_num:
+            return None
+        row = sheet.row_values(row_num)
+        return _row_to_profile(row)
     except Exception:
         return None
 
 
 def get_all_profiles() -> list[dict]:
-    """모든 프로필 조회 (알림 발송용)"""
+    """모든 프로필 조회 (알림 발송용, team_id 포함)"""
     try:
         sheet = get_sheets().worksheet("profiles")
         data = sheet.get_all_values()
@@ -75,21 +157,44 @@ def get_all_profiles() -> list[dict]:
 
         profiles = []
         for row in data[1:]:
-            if len(row) < 3:
+            if len(row) < 4:
                 continue
-            profiles.append({
-                'user_id': row[0],
-                'keywords': row[1].split(',') if row[1] else [],
-                'description': row[2],
-                'stage': row[3] if len(row) > 3 else '',
-                'region': row[4] if len(row) > 4 else '',
-                'support_types': row[5].split(',') if len(row) > 5 and row[5] else []
-            })
+            profiles.append(_row_to_profile(row))
         return profiles
     except Exception as e:
         print(f"프로필 목록 조회 실패: {e}")
         return []
 
+
+def _find_profile_row(sheet, user_id: str, team_id: str) -> int | None:
+    """team_id + user_id로 행 번호 검색"""
+    try:
+        cells = sheet.findall(user_id)
+        for cell in cells:
+            row = sheet.row_values(cell.row)
+            if row and row[0] == team_id and len(row) > 1 and row[1] == user_id:
+                return cell.row
+    except gspread.exceptions.CellNotFound:
+        pass
+    return None
+
+
+def _row_to_profile(row: list) -> dict:
+    """시트 행 → 프로필 dict 변환"""
+    return {
+        'team_id': row[0],
+        'user_id': row[1],
+        'keywords': row[2].split(',') if len(row) > 2 and row[2] else [],
+        'description': row[3] if len(row) > 3 else '',
+        'stage': row[4] if len(row) > 4 else '',
+        'region': row[5] if len(row) > 5 else '',
+        'support_types': row[6].split(',') if len(row) > 6 and row[6] else []
+    }
+
+
+# ============================================
+# Grants CRUD (변경 없음)
+# ============================================
 
 def get_recent_grants(limit: int = 20) -> list[dict]:
     """최근 공고 조회"""
