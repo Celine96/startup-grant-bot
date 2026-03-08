@@ -4,13 +4,17 @@ services:
     name: startup-grant-bot-simple
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python migrate.py && python main.py
     envVars:
       - key: SLACK_CLIENT_ID
         sync: false
       - key: SLACK_CLIENT_SECRET
         sync: false
       - key: SLACK_SIGNING_SECRET
+        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: TEAM_ID
         sync: false
       - key: SPREADSHEET_KEY
         sync: false
