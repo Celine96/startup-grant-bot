@@ -2,9 +2,20 @@
 공통 설정 상수
 """
 
+import os
+
+# Slack OAuth
+SLACK_CLIENT_ID = os.getenv('SLACK_CLIENT_ID')
+SLACK_CLIENT_SECRET = os.getenv('SLACK_CLIENT_SECRET')
+SLACK_SIGNING_SECRET = os.getenv('SLACK_SIGNING_SECRET')
+SLACK_SCOPES = [
+    'commands', 'chat:write', 'im:write',
+    'users:read', 'channels:read',
+]
+
 # Google Sheets 컬럼 정의
 GRANT_COLUMNS = ['id', 'title', 'organization', 'deadline', 'url', 'keywords', 'description']
-PROFILE_COLUMNS = ['user_id', 'keywords', 'description', 'stage', 'region', 'support_types']
+PROFILE_COLUMNS = ['team_id', 'user_id', 'keywords', 'description', 'stage', 'region', 'support_types']
 
 # 매칭 설정
 MAX_MATCH_RESULTS = 3

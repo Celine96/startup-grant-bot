@@ -1,44 +1,51 @@
 """
-Slack DM 알림 모듈
+Slack DM 알림 모듈 (멀티테넌트)
 """
 
-import os
+from slack_sdk import WebClient
 
-from slack_bolt import App
-
-from db import get_all_profiles
+from db import get_all_profiles, get_all_installations
 from matcher import match_grant
 from config import MAX_MATCH_RESULTS
 
 
-def create_slack_app() -> App:
-    """알림 전용 Slack 앱 인스턴스"""
-    token = os.getenv('SLACK_BOT_TOKEN')
-    if not token:
-        raise RuntimeError("SLACK_BOT_TOKEN 환경변수가 설정되지 않았습니다")
-    return App(token=token)
-
-
 def notify_users(new_grants: list[dict]):
-    """모든 프로필을 순회하며 매칭 결과 DM 발송"""
+    """모든 설치된 워크스페이스의 프로필을 순회하며 매칭 결과 DM 발송"""
+    installations = get_all_installations()
+    if not installations:
+        print("설치된 워크스페이스 없음")
+        return
+
     profiles = get_all_profiles()
     if not profiles:
         print("알림 대상 프로필 없음")
         return
 
-    app = create_slack_app()
     sent_count = 0
+    total_profiles = 0
 
-    for profile in profiles:
-        matches = match_grants_for_profile(profile, new_grants)
-        if matches:
-            try:
-                send_dm(app, profile['user_id'], matches)
-                sent_count += 1
-            except Exception as e:
-                print(f"DM 발송 실패 ({profile['user_id']}): {e}")
+    for inst in installations:
+        token = inst['bot_token']
+        team_id = inst['team_id']
 
-    print(f"알림 발송 완료: {sent_count}/{len(profiles)}명")
+        # 해당 워크스페이스의 프로필만 필터
+        team_profiles = [p for p in profiles if p.get('team_id') == team_id]
+        if not team_profiles:
+            continue
+
+        total_profiles += len(team_profiles)
+        client = WebClient(token=token)
+
+        for profile in team_profiles:
+            matches = match_grants_for_profile(profile, new_grants)
+            if matches:
+                try:
+                    send_dm(client, profile['user_id'], matches)
+                    sent_count += 1
+                except Exception as e:
+                    print(f"DM 발송 실패 ({team_id}/{profile['user_id']}): {e}")
+
+    print(f"알림 발송 완료: {sent_count}/{total_profiles}명 ({len(installations)}개 워크스페이스)")
 
 
 def match_grants_for_profile(profile: dict, grants: list[dict]) -> list[dict]:
@@ -57,9 +64,9 @@ def match_grants_for_profile(profile: dict, grants: list[dict]) -> list[dict]:
     return results[:MAX_MATCH_RESULTS]
 
 
-def send_dm(app: App, user_id: str, matches: list[dict]):
+def send_dm(client: WebClient, user_id: str, matches: list[dict]):
     """Slack DM으로 매칭 결과 발송"""
-    dm = app.client.conversations_open(users=user_id)
+    dm = client.conversations_open(users=user_id)
     channel = dm['channel']['id']
 
     lines = ["새로운 맞춤 지원사업이 있습니다!\n"]
@@ -73,7 +80,7 @@ def send_dm(app: App, user_id: str, matches: list[dict]):
         lines.append(f"  링크: {grant['url']}")
         lines.append("")
 
-    app.client.chat_postMessage(
+    client.chat_postMessage(
         channel=channel,
         text='\n'.join(lines),
     )
