@@ -45,6 +45,7 @@ class GoogleSheetsInstallationStore(InstallationStore):
         return Installation(
             team_id=inst['team_id'],
             team_name=inst.get('team_name', ''),
+            user_id=user_id or '',
             bot_token=inst['bot_token'],
             bot_user_id=inst.get('bot_user_id', ''),
         )
