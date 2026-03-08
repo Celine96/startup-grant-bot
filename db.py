@@ -4,9 +4,10 @@ Google Sheets CRUD 모듈
 
 import os
 import json
+import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 import gspread
@@ -14,20 +15,44 @@ from google.oauth2.service_account import Credentials
 
 from config import SHEETS_SCOPES
 
+logger = logging.getLogger(__name__)
+
 SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 GOOGLE_CREDS = json.loads(os.getenv("GOOGLE_SHEETS_CREDENTIALS", "{}"))
 
+# Google Sheets 연결 캐시 (TTL 5분)
+_cached_sheets = None
+_cached_at = 0
+_CACHE_TTL = 300
+
 
 def get_sheets() -> gspread.Spreadsheet:
-    """Google Sheets 연결"""
+    """Google Sheets 연결 (5분 캐싱)"""
+    global _cached_sheets, _cached_at
+    now = time.time()
+    if _cached_sheets and (now - _cached_at) < _CACHE_TTL:
+        return _cached_sheets
     creds = Credentials.from_service_account_info(GOOGLE_CREDS, scopes=SHEETS_SCOPES)
     client = gspread.authorize(creds)
-    return client.open_by_key(SPREADSHEET_KEY)
+    _cached_sheets = client.open_by_key(SPREADSHEET_KEY)
+    _cached_at = now
+    return _cached_sheets
 
 
 # ============================================
 # Installations CRUD
 # ============================================
+
+def _row_to_installation(row: list) -> dict:
+    """시트 행 -> installation dict 변환"""
+    return {
+        'team_id': row[0],
+        'team_name': row[1] if len(row) > 1 else '',
+        'bot_token': row[2] if len(row) > 2 else '',
+        'bot_user_id': row[3] if len(row) > 3 else '',
+        'installed_at': row[4] if len(row) > 4 else '',
+    }
+
 
 def save_installation(team_id: str, data: dict) -> bool:
     """설치 정보 저장 (존재하면 업데이트, 없으면 추가)"""
@@ -38,16 +63,16 @@ def save_installation(team_id: str, data: dict) -> bool:
             data.get('team_name', ''),
             data['bot_token'],
             data.get('bot_user_id', ''),
-            data.get('installed_at', datetime.utcnow().isoformat()),
+            data.get('installed_at', datetime.now(timezone.utc).isoformat()),
         ]
-        try:
-            cell = sheet.find(team_id)
-            sheet.update(f'A{cell.row}:E{cell.row}', [row_data])
-        except gspread.exceptions.CellNotFound:
+        cell = sheet.find(team_id)
+        if cell:
+            sheet.update([row_data], f'A{cell.row}:E{cell.row}')
+        else:
             sheet.append_row(row_data)
         return True
     except Exception as e:
-        print(f"설치 정보 저장 실패: {e}")
+        logger.error("설치 정보 저장 실패: %s", e)
         return False
 
 
@@ -56,15 +81,12 @@ def get_installation(team_id: str) -> dict | None:
     try:
         sheet = get_sheets().worksheet("installations")
         cell = sheet.find(team_id)
+        if not cell:
+            return None
         row = sheet.row_values(cell.row)
-        return {
-            'team_id': row[0],
-            'team_name': row[1] if len(row) > 1 else '',
-            'bot_token': row[2] if len(row) > 2 else '',
-            'bot_user_id': row[3] if len(row) > 3 else '',
-            'installed_at': row[4] if len(row) > 4 else '',
-        }
-    except Exception:
+        return _row_to_installation(row)
+    except Exception as e:
+        logger.error("설치 정보 조회 실패: %s", e)
         return None
 
 
@@ -80,16 +102,10 @@ def get_all_installations() -> list[dict]:
         for row in data[1:]:
             if len(row) < 3 or not row[0]:
                 continue
-            installations.append({
-                'team_id': row[0],
-                'team_name': row[1] if len(row) > 1 else '',
-                'bot_token': row[2] if len(row) > 2 else '',
-                'bot_user_id': row[3] if len(row) > 3 else '',
-                'installed_at': row[4] if len(row) > 4 else '',
-            })
+            installations.append(_row_to_installation(row))
         return installations
     except Exception as e:
-        print(f"설치 목록 조회 실패: {e}")
+        logger.error("설치 목록 조회 실패: %s", e)
         return []
 
 
@@ -98,10 +114,12 @@ def delete_installation(team_id: str) -> bool:
     try:
         sheet = get_sheets().worksheet("installations")
         cell = sheet.find(team_id)
+        if not cell:
+            return False
         sheet.delete_rows(cell.row)
         return True
     except Exception as e:
-        print(f"설치 정보 삭제 실패: {e}")
+        logger.error("설치 정보 삭제 실패: %s", e)
         return False
 
 
@@ -125,12 +143,12 @@ def save_profile(user_id: str, team_id: str, data: dict) -> bool:
         # team_id + user_id 조합으로 기존 행 검색
         existing_row = _find_profile_row(sheet, user_id, team_id)
         if existing_row:
-            sheet.update(f'A{existing_row}:G{existing_row}', [row_data])
+            sheet.update([row_data], f'A{existing_row}:G{existing_row}')
         else:
             sheet.append_row(row_data)
         return True
     except Exception as e:
-        print(f"프로필 저장 실패: {e}")
+        logger.error("프로필 저장 실패: %s", e)
         return False
 
 
@@ -143,7 +161,8 @@ def get_profile(user_id: str, team_id: str) -> dict | None:
             return None
         row = sheet.row_values(row_num)
         return _row_to_profile(row)
-    except Exception:
+    except Exception as e:
+        logger.error("프로필 조회 실패: %s", e)
         return None
 
 
@@ -162,25 +181,22 @@ def get_all_profiles() -> list[dict]:
             profiles.append(_row_to_profile(row))
         return profiles
     except Exception as e:
-        print(f"프로필 목록 조회 실패: {e}")
+        logger.error("프로필 목록 조회 실패: %s", e)
         return []
 
 
 def _find_profile_row(sheet, user_id: str, team_id: str) -> int | None:
     """team_id + user_id로 행 번호 검색"""
-    try:
-        cells = sheet.findall(user_id)
-        for cell in cells:
-            row = sheet.row_values(cell.row)
-            if row and row[0] == team_id and len(row) > 1 and row[1] == user_id:
-                return cell.row
-    except gspread.exceptions.CellNotFound:
-        pass
+    cells = sheet.findall(user_id)
+    for cell in cells:
+        row = sheet.row_values(cell.row)
+        if row and row[0] == team_id and len(row) > 1 and row[1] == user_id:
+            return cell.row
     return None
 
 
 def _row_to_profile(row: list) -> dict:
-    """시트 행 → 프로필 dict 변환"""
+    """시트 행 -> 프로필 dict 변환"""
     return {
         'team_id': row[0],
         'user_id': row[1],
@@ -202,7 +218,8 @@ def get_recent_grants(limit: int = 20) -> list[dict]:
         sheet = get_sheets().worksheet("grants")
         records = sheet.get_all_records()
         return records[-limit:] if len(records) > limit else records
-    except Exception:
+    except Exception as e:
+        logger.error("공고 조회 실패: %s", e)
         return []
 
 
@@ -225,8 +242,8 @@ def save_grants(grants: List[dict]) -> int:
                         existing_ids.add(row[0])
                         if len(row) > 1 and row[1]:
                             existing_titles.add(re.sub(r'\s+', '', row[1]).lower())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("기존 공고 목록 조회 실패, 전체 저장 진행: %s", e)
 
         # 신규 공고만 필터링 (ID + 제목 중복 체크)
         new_grants = []
@@ -236,7 +253,7 @@ def save_grants(grants: List[dict]) -> int:
                 new_grants.append(g)
                 existing_titles.add(normalized_title)
         if not new_grants:
-            print(f"공고 저장 완료: 신규 0개 (기존 {len(existing_ids)}개, 전체 중복)")
+            logger.info("공고 저장 완료: 신규 0개 (기존 %d개, 전체 중복)", len(existing_ids))
             return 0
 
         # 전체를 한 번의 API 호출로 저장 (rate limit 회피)
@@ -251,8 +268,9 @@ def save_grants(grants: List[dict]) -> int:
         sheet.append_rows(rows, value_input_option='RAW')
         new_count = len(new_grants)
 
-        print(f"공고 저장 완료: 신규 {new_count}개 (기존 {len(existing_ids)}개, 중복 제외 {len(grants) - new_count}개)")
+        logger.info("공고 저장 완료: 신규 %d개 (기존 %d개, 중복 제외 %d개)",
+                     new_count, len(existing_ids), len(grants) - new_count)
         return new_count
     except Exception as e:
-        print(f"공고 저장 실패: {e}")
+        logger.error("공고 저장 실패: %s", e)
         return 0

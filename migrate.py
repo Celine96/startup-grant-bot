@@ -12,7 +12,7 @@
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 import gspread
 
@@ -44,7 +44,7 @@ def migrate():
 
         if not data:
             print("   profiles 시트가 비어있음 - 헤더만 생성")
-            sheet.update('A1:G1', [['team_id', 'user_id', 'keywords', 'description', 'stage', 'region', 'support_types']])
+            sheet.update([['team_id', 'user_id', 'keywords', 'description', 'stage', 'region', 'support_types']], 'A1:G1')
         else:
             header = data[0]
             if header[0] == 'team_id':
@@ -57,12 +57,12 @@ def migrate():
 
                 # 기존 범위를 새 데이터로 덮어쓰기
                 end_col = chr(ord('A') + len(new_data[0]) - 1)
-                sheet.update(f'A1:{end_col}{len(new_data)}', new_data)
+                sheet.update(new_data, f'A1:{end_col}{len(new_data)}')
                 print(f"   {len(data) - 1}개 프로필에 team_id={team_id} 추가 완료")
     except gspread.exceptions.WorksheetNotFound:
         print("   profiles 시트 없음 - 새로 생성")
         sheet = spreadsheet.add_worksheet(title="profiles", rows=100, cols=7)
-        sheet.update('A1:G1', [['team_id', 'user_id', 'keywords', 'description', 'stage', 'region', 'support_types']])
+        sheet.update([['team_id', 'user_id', 'keywords', 'description', 'stage', 'region', 'support_types']], 'A1:G1')
 
     # ----------------------------------------
     # 2. installations 시트 생성 + 현재 토큰 등록
@@ -71,17 +71,17 @@ def migrate():
     try:
         spreadsheet.worksheet("installations")
         print("   installations 시트가 이미 존재함")
-    except Exception:
+    except gspread.exceptions.WorksheetNotFound:
         print("   installations 시트 새로 생성")
         inst_sheet = spreadsheet.add_worksheet(title="installations", rows=100, cols=5)
-        inst_sheet.update('A1:E1', [['team_id', 'team_name', 'bot_token', 'bot_user_id', 'installed_at']])
+        inst_sheet.update([['team_id', 'team_name', 'bot_token', 'bot_user_id', 'installed_at']], 'A1:E1')
 
     # 현재 토큰 등록
     save_installation(team_id, {
         'team_name': team_name,
         'bot_token': bot_token,
         'bot_user_id': '',
-        'installed_at': datetime.utcnow().isoformat(),
+        'installed_at': datetime.now(timezone.utc).isoformat(),
     })
     print(f"   team_id={team_id} 설치 정보 저장 완료")
 

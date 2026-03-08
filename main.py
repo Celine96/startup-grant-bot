@@ -3,6 +3,7 @@
 """
 
 import json
+import sys
 
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
@@ -20,6 +21,13 @@ from oauth_store import GoogleSheetsInstallationStore, InMemoryOAuthStateStore
 # ============================================
 # 설정
 # ============================================
+
+_missing = [v for v in ('SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'SLACK_SIGNING_SECRET')
+            if not globals().get(v)]
+if _missing:
+    print(f"ERROR: 필수 환경변수가 설정되지 않았습니다: {', '.join(_missing)}")
+    print("  Render Dashboard → Environment → 환경변수를 확인하세요.")
+    sys.exit(1)
 
 installation_store = GoogleSheetsInstallationStore()
 
