@@ -10,7 +10,7 @@ from slack_bolt.adapter.fastapi import SlackRequestHandler
 from slack_bolt.oauth.oauth_settings import OAuthSettings
 from fastapi import FastAPI, Request
 
-from db import save_profile, get_profile, get_recent_grants
+from db import save_profile, get_profile, get_active_grants
 from matcher import match_grant
 from config import (
     MAX_MATCH_RESULTS,
@@ -164,7 +164,7 @@ def test_matching(ack, command, say):
         say("프로필을 먼저 등록하세요: `/register`")
         return
 
-    grants = get_recent_grants()
+    grants = get_active_grants()
 
     if not grants:
         say("등록된 공고가 없습니다.")

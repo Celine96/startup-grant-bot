@@ -14,8 +14,10 @@ def match_grant(grant: dict, profile: dict) -> tuple[float, str]:
             grant.get('keywords', ''),
         ]).lower()
 
+        grant_title = grant.get('title', '').lower()
+
         # 1. 키워드 매칭 (가중치 60%)
-        keyword_score, matched = _keyword_match(profile_keywords, grant_text)
+        keyword_score, matched = _keyword_match(profile_keywords, grant_text, grant_title)
 
         # 2. 창업 단계 매칭 (가중치 20%)
         stage_score, stage_reason = _stage_match(grant, profile)
@@ -40,13 +42,20 @@ def match_grant(grant: dict, profile: dict) -> tuple[float, str]:
         return 0.0, f"매칭 실패: {e}"
 
 
-def _keyword_match(profile_keywords: list[str], grant_text: str) -> tuple[float, list[str]]:
-    """키워드 매칭 점수"""
+def _keyword_match(profile_keywords: list[str], grant_text: str, grant_title: str) -> tuple[float, list[str]]:
+    """키워드 매칭 점수 (title 매칭 시 가산점)"""
     if not profile_keywords:
         return 0.0, []
 
     matched = [kw for kw in profile_keywords if kw in grant_text]
+    if not matched:
+        return 0.0, []
+
+    # title에 매칭된 키워드는 가산점
+    title_matched = [kw for kw in matched if kw in grant_title]
     score = len(matched) / len(profile_keywords)
+    if title_matched:
+        score = min(1.0, score * 1.3)
     return score, matched
 
 
@@ -78,25 +87,20 @@ def _stage_match(grant: dict, profile: dict) -> tuple[float, str]:
 
 
 def _description_match(grant: dict, profile: dict) -> float:
-    """설명 유사도 (단어 겹침 기반)"""
-    profile_desc = profile.get('description', '').lower()
-    grant_desc = ' '.join([
+    """설명 유사도 (substring 기반, 한국어 대응)"""
+    profile_desc = profile.get('description', '')
+    grant_text = ' '.join([
         grant.get('title', ''),
         grant.get('description', ''),
     ]).lower()
 
-    if not profile_desc or not grant_desc:
+    if not profile_desc or not grant_text:
         return 0.0
 
-    profile_words = set(profile_desc.split())
-    grant_words = set(grant_desc.split())
-
-    # 1~2글자 불용어 제거
-    profile_words = {w for w in profile_words if len(w) > 2}
-    grant_words = {w for w in grant_words if len(w) > 2}
-
-    if not profile_words:
+    # 2자 이상 단어를 substring으로 검색
+    words = [w for w in profile_desc.lower().split() if len(w) >= 2]
+    if not words:
         return 0.0
 
-    overlap = profile_words & grant_words
-    return len(overlap) / len(profile_words) if profile_words else 0.0
+    matched = sum(1 for w in words if w in grant_text)
+    return matched / len(words)

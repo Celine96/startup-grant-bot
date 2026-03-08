@@ -212,8 +212,26 @@ def _row_to_profile(row: list) -> dict:
 # Grants CRUD (변경 없음)
 # ============================================
 
+def get_active_grants() -> list[dict]:
+    """마감 전 공고 전체 조회"""
+    try:
+        sheet = get_sheets().worksheet("grants")
+        records = sheet.get_all_records()
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        active = []
+        for r in records:
+            deadline = str(r.get('deadline', '')).strip()
+            # 마감일 없거나, 파싱 불가하거나, 오늘 이후면 포함
+            if not deadline or deadline >= today or len(deadline) != 10:
+                active.append(r)
+        return active
+    except Exception as e:
+        logger.error("공고 조회 실패: %s", e)
+        return []
+
+
 def get_recent_grants(limit: int = 20) -> list[dict]:
-    """최근 공고 조회"""
+    """최근 공고 조회 (하위 호환용)"""
     try:
         sheet = get_sheets().worksheet("grants")
         records = sheet.get_all_records()
