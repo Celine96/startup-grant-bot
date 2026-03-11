@@ -4,6 +4,7 @@
 
 import json
 import sys
+from datetime import datetime, timezone
 
 from slack_bolt import App
 from slack_bolt.adapter.fastapi import SlackRequestHandler
@@ -11,9 +12,9 @@ from slack_bolt.oauth.oauth_settings import OAuthSettings
 from fastapi import FastAPI, Request
 
 from db import save_profile, get_profile, get_active_grants
-from matcher import match_grant
+from matcher import match_grant, pre_filter, extract_amount, extract_documents, format_amount
 from config import (
-    MAX_MATCH_RESULTS,
+    MAX_MATCH_RESULTS, REGION_OPTIONS,
     SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_SIGNING_SECRET, SLACK_SCOPES,
 )
 from oauth_store import GoogleSheetsInstallationStore, InMemoryOAuthStateStore
@@ -22,11 +23,11 @@ from oauth_store import GoogleSheetsInstallationStore, InMemoryOAuthStateStore
 # 설정
 # ============================================
 
-_missing = [v for v in ('SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'SLACK_SIGNING_SECRET')
+_missing = [v for v in ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET", "SLACK_SIGNING_SECRET")
             if not globals().get(v)]
 if _missing:
-    print(f"ERROR: 필수 환경변수가 설정되지 않았습니다: {', '.join(_missing)}")
-    print("  Render Dashboard → Environment → 환경변수를 확인하세요.")
+    print(f"ERROR: 필수 환경변수가 설정되지 않았습니다: {", ".join(_missing)}")
+    print("  Render Dashboard -> Environment -> 환경변수를 확인하세요.")
     sys.exit(1)
 
 installation_store = GoogleSheetsInstallationStore()
@@ -53,7 +54,12 @@ def register(ack, command, client, body):
     """프로필 등록"""
     ack()
 
-    team_id = command['team_id']
+    team_id = command["team_id"]
+
+    region_options = [
+        {"text": {"type": "plain_text", "text": r}, "value": r}
+        for r in REGION_OPTIONS
+    ]
 
     client.views_open(
         trigger_id=body["trigger_id"],
@@ -99,7 +105,31 @@ def register(ack, command, client, body):
                         ]
                     },
                     "label": {"type": "plain_text", "text": "창업 단계"}
-                }
+                },
+                {
+                    "type": "input",
+                    "block_id": "region",
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "input",
+                        "initial_option": {"text": {"type": "plain_text", "text": "전국(무관)"}, "value": "전국(무관)"},
+                        "options": region_options,
+                    },
+                    "label": {"type": "plain_text", "text": "사업자 소재지 (시/도)"},
+                    "hint": {"type": "plain_text", "text": "사업자등록증 주소지 기준. 지역 제한 공고 필터링에 사용됩니다."}
+                },
+                {
+                    "type": "input",
+                    "block_id": "min_amount",
+                    "optional": True,
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "input",
+                        "placeholder": {"type": "plain_text", "text": "예: 5000 (만원 단위, 미입력시 필터 없음)"}
+                    },
+                    "label": {"type": "plain_text", "text": "최소 희망 지원금액 (만원)"},
+                    "hint": {"type": "plain_text", "text": "이 금액 미만의 지원사업은 결과에서 제외됩니다."}
+                },
             ]
         }
     )
@@ -112,19 +142,39 @@ def handle_submission(ack, body, view, client):
     team_id = metadata.get("team_id", body.get("team", {}).get("id", ""))
     values = view["state"]["values"]
 
+    # 최소 금액 파싱
+    min_amount_raw = (values["min_amount"]["input"].get("value") or "").strip()
+    min_amount = 0
+    if min_amount_raw:
+        try:
+            min_amount = int(min_amount_raw.replace(",", ""))
+        except ValueError:
+            ack(response_action="errors", errors={"min_amount": "숫자만 입력해주세요 (예: 5000)"})
+            return
+
     data = {
-        'keywords': values["keywords"]["input"]["value"].split(','),
-        'description': values["description"]["input"]["value"],
-        'stage': values["stage"]["input"]["selected_option"]["value"]
+        "keywords": values["keywords"]["input"]["value"].split(","),
+        "description": values["description"]["input"]["value"],
+        "stage": values["stage"]["input"]["selected_option"]["value"],
+        "region": values["region"]["input"]["selected_option"]["value"],
+        "min_amount": min_amount,
     }
 
-    data['keywords'] = [k.strip() for k in data['keywords'] if k.strip()]
+    data["keywords"] = [k.strip() for k in data["keywords"] if k.strip()]
 
     if save_profile(user_id, team_id, data):
         ack()
+
+        amount_text = f"{min_amount:,}만원 이상" if min_amount else "필터 없음"
         client.chat_postMessage(
             channel=user_id,
-            text="프로필 등록 완료! 매주 월요일 맞춤 공고를 받아보세요."
+            text=(
+                f"프로필 등록 완료! 매주 월요일 맞춤 공고를 받아보세요.\n\n"
+                f"키워드: {", ".join(data["keywords"])}\n"
+                f"단계: {data["stage"]}\n"
+                f"소재지: {data["region"]}\n"
+                f"최소 금액: {amount_text}"
+            )
         )
     else:
         ack()
@@ -138,15 +188,19 @@ def profile_command(ack, command, say):
     """프로필 확인"""
     ack()
 
-    team_id = command['team_id']
-    profile = get_profile(command['user_id'], team_id)
+    team_id = command["team_id"]
+    profile = get_profile(command["user_id"], team_id)
 
     if profile:
+        min_amt = profile.get("min_amount", 0)
+        amount_text = f"{min_amt:,}만원 이상" if min_amt else "필터 없음"
         say(
             f"현재 프로필\n\n"
-            f"키워드: {', '.join(profile['keywords'])}\n"
-            f"사업: {profile['description']}\n"
-            f"단계: {profile['stage']}"
+            f"키워드: {", ".join(profile["keywords"])}\n"
+            f"사업: {profile["description"]}\n"
+            f"단계: {profile["stage"]}\n"
+            f"소재지: {profile.get("region", "") or "미설정"}\n"
+            f"최소 금액: {amount_text}"
         )
     else:
         say("프로필이 없습니다. `/register` 명령어로 등록하세요.")
@@ -156,8 +210,8 @@ def test_matching(ack, command, say):
     """매칭 테스트"""
     ack()
 
-    user_id = command['user_id']
-    team_id = command['team_id']
+    user_id = command["user_id"]
+    team_id = command["team_id"]
     profile = get_profile(user_id, team_id)
 
     if not profile:
@@ -170,32 +224,64 @@ def test_matching(ack, command, say):
         say("등록된 공고가 없습니다.")
         return
 
+    # 사전 필터 적용
+    filtered = pre_filter(grants, profile)
+
+    if not filtered:
+        say("조건에 맞는 공고가 없습니다. (지역/마감일/금액 필터 확인)")
+        return
+
     results = []
-    for grant in grants:
+    for grant in filtered:
         score, reason = match_grant(grant, profile)
         if score > 0:
             results.append({
-                'grant': grant,
-                'score': score,
-                'reason': reason
+                "grant": grant,
+                "score": score,
+                "reason": reason
             })
 
-    results.sort(key=lambda x: x['score'], reverse=True)
+    results.sort(key=lambda x: x["score"], reverse=True)
 
     if not results:
         say("매칭되는 공고가 없습니다.")
         return
 
+    today = datetime.now(timezone.utc).date()
     message = "매칭 결과\n\n"
 
     for result in results[:MAX_MATCH_RESULTS]:
-        grant = result['grant']
-        score = int(result['score'] * 100)
+        grant = result["grant"]
+        score = int(result["score"] * 100)
+        desc = grant.get("description", "")
 
-        message += f"매칭도 {score}% - {grant['title']}\n"
-        message += f"  기관: {grant['organization']}\n"
-        message += f"  사유: {result['reason']}\n"
-        message += f"  링크: {grant['url']}\n\n"
+        # 마감일 D-day
+        deadline_str = str(grant.get("deadline", "")).strip()
+        if deadline_str and len(deadline_str) == 10:
+            try:
+                deadline_date = datetime.strptime(deadline_str, "%Y-%m-%d").date()
+                d_day = (deadline_date - today).days
+                deadline_display = f"{deadline_str} (D-{d_day})"
+            except ValueError:
+                deadline_display = deadline_str or "미정"
+        else:
+            deadline_display = deadline_str or "미정"
+
+        # 금액
+        amount = extract_amount(desc)
+        amount_display = format_amount(amount)
+
+        # 제출 서류
+        docs = extract_documents(desc)
+        docs_display = ", ".join(docs) if docs else "공고 확인 필요"
+
+        message += f"매칭도 {score}% - {grant["title"]}\n"
+        message += f"  기관: {grant["organization"]}\n"
+        message += f"  마감: {deadline_display}\n"
+        message += f"  금액: {amount_display}\n"
+        message += f"  서류: {docs_display}\n"
+        message += f"  사유: {result["reason"]}\n"
+        message += f"  링크: {grant["url"]}\n\n"
 
     say(message)
 

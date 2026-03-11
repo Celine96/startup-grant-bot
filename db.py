@@ -46,11 +46,11 @@ def get_sheets() -> gspread.Spreadsheet:
 def _row_to_installation(row: list) -> dict:
     """시트 행 -> installation dict 변환"""
     return {
-        'team_id': row[0],
-        'team_name': row[1] if len(row) > 1 else '',
-        'bot_token': row[2] if len(row) > 2 else '',
-        'bot_user_id': row[3] if len(row) > 3 else '',
-        'installed_at': row[4] if len(row) > 4 else '',
+        "team_id": row[0],
+        "team_name": row[1] if len(row) > 1 else "",
+        "bot_token": row[2] if len(row) > 2 else "",
+        "bot_user_id": row[3] if len(row) > 3 else "",
+        "installed_at": row[4] if len(row) > 4 else "",
     }
 
 
@@ -60,14 +60,14 @@ def save_installation(team_id: str, data: dict) -> bool:
         sheet = get_sheets().worksheet("installations")
         row_data = [
             team_id,
-            data.get('team_name', ''),
-            data['bot_token'],
-            data.get('bot_user_id', ''),
-            data.get('installed_at', datetime.now(timezone.utc).isoformat()),
+            data.get("team_name", ""),
+            data["bot_token"],
+            data.get("bot_user_id", ""),
+            data.get("installed_at", datetime.now(timezone.utc).isoformat()),
         ]
         cell = sheet.find(team_id)
         if cell:
-            sheet.update([row_data], f'A{cell.row}:E{cell.row}')
+            sheet.update([row_data], f"A{cell.row}:E{cell.row}")
         else:
             sheet.append_row(row_data)
         return True
@@ -131,19 +131,21 @@ def save_profile(user_id: str, team_id: str, data: dict) -> bool:
     """프로필 저장 (team_id + user_id로 식별)"""
     try:
         sheet = get_sheets().worksheet("profiles")
+        min_amount = data.get("min_amount", 0)
         row_data = [
             team_id,
             user_id,
-            ','.join(data['keywords']),
-            data['description'],
-            data['stage'],
-            data.get('region', ''),
-            ','.join(data.get('support_types', []))
+            ",".join(data["keywords"]),
+            data["description"],
+            data["stage"],
+            data.get("region", ""),
+            ",".join(data.get("support_types", [])),
+            str(min_amount) if min_amount else "",
         ]
         # team_id + user_id 조합으로 기존 행 검색
         existing_row = _find_profile_row(sheet, user_id, team_id)
         if existing_row:
-            sheet.update([row_data], f'A{existing_row}:G{existing_row}')
+            sheet.update([row_data], f"A{existing_row}:H{existing_row}")
         else:
             sheet.append_row(row_data)
         return True
@@ -197,14 +199,22 @@ def _find_profile_row(sheet, user_id: str, team_id: str) -> int | None:
 
 def _row_to_profile(row: list) -> dict:
     """시트 행 -> 프로필 dict 변환"""
+    min_amount = 0
+    if len(row) > 7 and row[7]:
+        try:
+            min_amount = int(row[7])
+        except ValueError:
+            pass
+
     return {
-        'team_id': row[0],
-        'user_id': row[1],
-        'keywords': row[2].split(',') if len(row) > 2 and row[2] else [],
-        'description': row[3] if len(row) > 3 else '',
-        'stage': row[4] if len(row) > 4 else '',
-        'region': row[5] if len(row) > 5 else '',
-        'support_types': row[6].split(',') if len(row) > 6 and row[6] else []
+        "team_id": row[0],
+        "user_id": row[1],
+        "keywords": row[2].split(",") if len(row) > 2 and row[2] else [],
+        "description": row[3] if len(row) > 3 else "",
+        "stage": row[4] if len(row) > 4 else "",
+        "region": row[5] if len(row) > 5 else "",
+        "support_types": row[6].split(",") if len(row) > 6 and row[6] else [],
+        "min_amount": min_amount,
     }
 
 
@@ -217,10 +227,10 @@ def get_active_grants() -> list[dict]:
     try:
         sheet = get_sheets().worksheet("grants")
         records = sheet.get_all_records()
-        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         active = []
         for r in records:
-            deadline = str(r.get('deadline', '')).strip()
+            deadline = str(r.get("deadline", "")).strip()
             # 마감일 없거나, 파싱 불가하거나, 오늘 이후면 포함
             if not deadline or deadline >= today or len(deadline) != 10:
                 active.append(r)
@@ -259,15 +269,15 @@ def save_grants(grants: List[dict]) -> int:
                     if row:
                         existing_ids.add(row[0])
                         if len(row) > 1 and row[1]:
-                            existing_titles.add(re.sub(r'\s+', '', row[1]).lower())
+                            existing_titles.add(re.sub(r"\s+", "", row[1]).lower())
         except Exception as e:
             logger.warning("기존 공고 목록 조회 실패, 전체 저장 진행: %s", e)
 
         # 신규 공고만 필터링 (ID + 제목 중복 체크)
         new_grants = []
         for g in grants:
-            normalized_title = re.sub(r'\s+', '', g['title']).lower()
-            if g['id'] not in existing_ids and normalized_title not in existing_titles:
+            normalized_title = re.sub(r"\s+", "", g["title"]).lower()
+            if g["id"] not in existing_ids and normalized_title not in existing_titles:
                 new_grants.append(g)
                 existing_titles.add(normalized_title)
         if not new_grants:
@@ -277,13 +287,13 @@ def save_grants(grants: List[dict]) -> int:
         # 전체를 한 번의 API 호출로 저장 (rate limit 회피)
         rows = [
             [
-                g['id'], g['title'], g['organization'],
-                g['deadline'], g['url'],
-                g.get('keywords', ''), g.get('description', '')
+                g["id"], g["title"], g["organization"],
+                g["deadline"], g["url"],
+                g.get("keywords", ""), g.get("description", "")
             ]
             for g in new_grants
         ]
-        sheet.append_rows(rows, value_input_option='RAW')
+        sheet.append_rows(rows, value_input_option="RAW")
         new_count = len(new_grants)
 
         logger.info("공고 저장 완료: 신규 %d개 (기존 %d개, 중복 제외 %d개)",
