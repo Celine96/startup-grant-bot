@@ -13,7 +13,7 @@ from typing import List
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import SHEETS_SCOPES
+from config import SHEETS_SCOPES, GRANT_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def delete_installation(team_id: str) -> bool:
 
 
 # ============================================
-# Profiles CRUD (team_id 지원)
+# Profiles CRUD
 # ============================================
 
 def save_profile(user_id: str, team_id: str, data: dict) -> bool:
@@ -132,6 +132,8 @@ def save_profile(user_id: str, team_id: str, data: dict) -> bool:
     try:
         sheet = get_sheets().worksheet("profiles")
         min_amount = data.get("min_amount", 0)
+        founding_year = data.get("founding_year", 0)
+        previous_support = data.get("previous_support", [])
         row_data = [
             team_id,
             user_id,
@@ -141,11 +143,15 @@ def save_profile(user_id: str, team_id: str, data: dict) -> bool:
             data.get("region", ""),
             ",".join(data.get("support_types", [])),
             str(min_amount) if min_amount else "",
+            str(founding_year) if founding_year else "",
+            ",".join(previous_support) if previous_support else "",
+            data.get("revenue_range", ""),
+            data.get("business_type", ""),
+            data.get("ceo_age_range", ""),
         ]
-        # team_id + user_id 조합으로 기존 행 검색
         existing_row = _find_profile_row(sheet, user_id, team_id)
         if existing_row:
-            sheet.update([row_data], f"A{existing_row}:H{existing_row}")
+            sheet.update([row_data], f"A{existing_row}:M{existing_row}")
         else:
             sheet.append_row(row_data)
         return True
@@ -206,6 +212,17 @@ def _row_to_profile(row: list) -> dict:
         except ValueError:
             pass
 
+    founding_year = 0
+    if len(row) > 8 and row[8]:
+        try:
+            founding_year = int(row[8])
+        except ValueError:
+            pass
+
+    previous_support = []
+    if len(row) > 9 and row[9]:
+        previous_support = [s.strip() for s in row[9].split(",") if s.strip()]
+
     return {
         "team_id": row[0],
         "user_id": row[1],
@@ -215,23 +232,43 @@ def _row_to_profile(row: list) -> dict:
         "region": row[5] if len(row) > 5 else "",
         "support_types": row[6].split(",") if len(row) > 6 and row[6] else [],
         "min_amount": min_amount,
+        "founding_year": founding_year,
+        "previous_support": previous_support,
+        "revenue_range": row[10] if len(row) > 10 and row[10] else "",
+        "business_type": row[11] if len(row) > 11 and row[11] else "",
+        "ceo_age_range": row[12] if len(row) > 12 and row[12] else "",
     }
 
 
 # ============================================
-# Grants CRUD (변경 없음)
+# Grants CRUD
 # ============================================
+
+def _ensure_grant_headers(sheet) -> None:
+    """grants 시트 헤더가 확장 컬럼을 포함하도록 보장"""
+    try:
+        headers = sheet.row_values(1)
+        if len(headers) < len(GRANT_COLUMNS):
+            for i, col in enumerate(GRANT_COLUMNS):
+                if i >= len(headers):
+                    sheet.update_cell(1, i + 1, col)
+    except Exception:
+        pass
+
 
 def get_active_grants() -> list[dict]:
     """마감 전 공고 전체 조회"""
     try:
         sheet = get_sheets().worksheet("grants")
+        _ensure_grant_headers(sheet)
         records = sheet.get_all_records()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         active = []
         for r in records:
+            url = str(r.get("url", "")).strip()
+            if not url or not (url.startswith("http://") or url.startswith("https://")):
+                continue
             deadline = str(r.get("deadline", "")).strip()
-            # 마감일 없거나, 파싱 불가하거나, 오늘 이후면 포함
             if not deadline or deadline >= today or len(deadline) != 10:
                 active.append(r)
         return active
@@ -258,8 +295,8 @@ def save_grants(grants: List[dict]) -> int:
 
     try:
         sheet = get_sheets().worksheet("grants")
+        _ensure_grant_headers(sheet)
 
-        # 기존 ID + 제목 가져오기
         existing_ids = set()
         existing_titles = set()
         try:
@@ -273,7 +310,6 @@ def save_grants(grants: List[dict]) -> int:
         except Exception as e:
             logger.warning("기존 공고 목록 조회 실패, 전체 저장 진행: %s", e)
 
-        # 신규 공고만 필터링 (ID + 제목 중복 체크)
         new_grants = []
         for g in grants:
             normalized_title = re.sub(r"\s+", "", g["title"]).lower()
@@ -284,12 +320,12 @@ def save_grants(grants: List[dict]) -> int:
             logger.info("공고 저장 완료: 신규 0개 (기존 %d개, 전체 중복)", len(existing_ids))
             return 0
 
-        # 전체를 한 번의 API 호출로 저장 (rate limit 회피)
         rows = [
             [
                 g["id"], g["title"], g["organization"],
                 g["deadline"], g["url"],
-                g.get("keywords", ""), g.get("description", "")
+                g.get("keywords", ""), g.get("description", ""),
+                g.get("region", ""), str(g.get("max_amount", "")) if g.get("max_amount") else "",
             ]
             for g in new_grants
         ]
