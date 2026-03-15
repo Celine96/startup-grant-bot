@@ -255,6 +255,46 @@ def _tokenize_keyword(kw: str) -> list[str]:
 # 매칭 점수 산출
 # ============================================
 
+def _amount_bonus(grant: dict, profile: dict) -> float:
+    """금액 보너스 (최대 0.07) — 지원금 규모에 따른 가산."""
+    amount = get_grant_amount(grant)
+    if amount is None:
+        return 0.0
+    min_amt = profile.get("min_amount", 0) or 0
+    if min_amt <= 0:
+        if amount >= 10000:
+            return 0.07
+        if amount >= 5000:
+            return 0.04
+        if amount >= 1000:
+            return 0.02
+        return 0.01
+    ratio = amount / min_amt
+    if ratio >= 3.0:
+        return 0.07
+    if ratio >= 2.0:
+        return 0.04
+    if ratio >= 1.5:
+        return 0.02
+    return 0.01
+
+
+def _deadline_bonus(grant: dict) -> float:
+    """마감 여유 보너스 (최대 0.03) — 준비 시간이 충분할수록 높은 점수."""
+    deadline_str = str(grant.get("deadline", "")).strip()
+    if not deadline_str or len(deadline_str) != 10:
+        return 0.0
+    try:
+        days_left = (datetime.strptime(deadline_str, "%Y-%m-%d").date() - datetime.now(timezone.utc).date()).days
+        if days_left >= 45:
+            return 0.03
+        if days_left >= 30:
+            return 0.02
+        return 0.01
+    except ValueError:
+        return 0.0
+
+
 def match_grant(grant: dict, profile: dict) -> tuple[float, str]:
     """공고와 프로필 매칭 (점수, 이유)"""
     try:
@@ -267,23 +307,33 @@ def match_grant(grant: dict, profile: dict) -> tuple[float, str]:
         ]).lower()
 
         grant_title = grant.get("title", "").lower()
+        grant_keywords_field = grant.get("keywords", "").lower()
 
-        # 1. 키워드 매칭 (가중치 60%)
-        keyword_score, matched = _keyword_match(profile_keywords, grant_text, grant_title)
+        # 1. 키워드 매칭 (가중치 50%)
+        keyword_score, matched = _keyword_match(
+            profile_keywords, grant_text, grant_title, grant_keywords_field,
+        )
 
-        # 2. 창업 단계 매칭 (가중치 20%)
+        # 2. 창업 단계 매칭 (가중치 15%)
         stage_score, stage_reason = _stage_match(grant, profile)
 
-        # 3. 설명 유사도 (가중치 20%)
+        # 3. 설명 유사도 (가중치 15%)
         desc_score = _description_match(grant, profile)
 
-        total = keyword_score * 0.6 + stage_score * 0.2 + desc_score * 0.2
+        relevance = keyword_score * 0.50 + stage_score * 0.15 + desc_score * 0.15
 
-        # 업종 보너스 가산 (최대 0.1)
+        # 업종 보너스 (최대 0.10)
         business_type = profile.get("business_type", "")
         btype_matched = _business_type_match(grant, business_type) if business_type else False
-        if btype_matched:
-            total = min(1.0, total + 0.1)
+        btype_bonus = 0.10 if btype_matched else 0.0
+
+        # 금액 보너스 (최대 0.07)
+        amt_bonus = _amount_bonus(grant, profile)
+
+        # 마감 여유 보너스 (최대 0.03)
+        dl_bonus = _deadline_bonus(grant)
+
+        total = min(1.0, relevance + btype_bonus + amt_bonus + dl_bonus)
 
         # 사유 생성
         reasons = []
@@ -302,35 +352,40 @@ def match_grant(grant: dict, profile: dict) -> tuple[float, str]:
         return 0.0, f"매칭 실패: {e}"
 
 
-def _keyword_match(profile_keywords: list[str], grant_text: str, grant_title: str) -> tuple[float, list[str]]:
-    """키워드 매칭 점수 - 서브토큰 분해 후 개별 매칭 (title 매칭 시 가산점)"""
+def _keyword_match(
+    profile_keywords: list[str],
+    grant_text: str,
+    grant_title: str,
+    grant_keywords_field: str,
+) -> tuple[float, list[str]]:
+    """키워드 매칭 점수 - 매칭 위치(title/keywords/desc)별 차등 점수."""
     if not profile_keywords:
         return 0.0, []
 
+    scores = []
     matched_keywords = []
     for kw in profile_keywords:
         tokens = _tokenize_keyword(kw)
         if not tokens:
+            scores.append(0.0)
             continue
-        if any(t in grant_text for t in tokens):
+        if any(t in grant_title for t in tokens):
+            scores.append(1.0)
             matched_keywords.append(kw)
+        elif any(t in grant_keywords_field for t in tokens):
+            scores.append(0.7)
+            matched_keywords.append(kw)
+        elif any(t in grant_text for t in tokens):
+            scores.append(0.4)
+            matched_keywords.append(kw)
+        else:
+            scores.append(0.0)
 
-    if not matched_keywords:
-        return 0.0, []
-
-    # title에 매칭된 키워드는 가산점
-    title_bonus = any(
-        any(t in grant_title for t in _tokenize_keyword(kw))
-        for kw in matched_keywords
-    )
-    score = len(matched_keywords) / len(profile_keywords)
-    if title_bonus:
-        score = min(1.0, score * 1.3)
-    return score, matched_keywords
+    return (sum(scores) / len(scores)), matched_keywords
 
 
 def _stage_match(grant: dict, profile: dict) -> tuple[float, str]:
-    """창업 단계 매칭 점수"""
+    """창업 단계 매칭 점수 - exact/strong/weak 3단계 그라데이션."""
     stage = profile.get("stage", "").lower()
     if not stage:
         return 0.0, ""
@@ -342,22 +397,33 @@ def _stage_match(grant: dict, profile: dict) -> tuple[float, str]:
     ]).lower()
 
     stage_keywords = {
-        "예비": ["예비창업", "예비", "아이템"],
-        "초기": ["초기창업", "초기", "사업화", "창업패키지"],
-        "시드": ["시드", "tips", "기술창업", "r&d"],
-        "시리즈a": ["시리즈", "tips", "스케일업", "성장"],
+        "예비": {"exact": ["예비창업"], "strong": ["아이템"], "weak": ["예비"]},
+        "초기": {"exact": ["초기창업"], "strong": ["사업화", "창업패키지"], "weak": ["초기"]},
+        "시드": {"exact": ["기술창업"], "strong": ["tips", "r&d"], "weak": ["시드"]},
+        "시리즈a": {"exact": ["스케일업"], "strong": ["tips", "시리즈"], "weak": ["성장"]},
     }
 
-    keywords = stage_keywords.get(stage, [])
-    matched = [kw for kw in keywords if kw in grant_text]
-
-    if matched:
+    tiers = stage_keywords.get(stage, {})
+    if any(kw in grant_text for kw in tiers.get("exact", [])):
         return 1.0, f"단계 적합({stage})"
+    if any(kw in grant_text for kw in tiers.get("strong", [])):
+        return 0.7, f"단계 적합({stage})"
+    if any(kw in grant_text for kw in tiers.get("weak", [])):
+        return 0.3, f"단계 관련({stage})"
     return 0.0, ""
 
 
+def _word_weight(word: str) -> float:
+    """단어 길이 기반 가중치 — 구체적 단어일수록 높은 비중."""
+    if len(word) >= 4:
+        return 1.5
+    if len(word) >= 3:
+        return 1.0
+    return 0.5
+
+
 def _description_match(grant: dict, profile: dict) -> float:
-    """설명 유사도 (substring 기반, 한국어 대응)"""
+    """설명 유사도 (substring 기반, 단어 길이 가중치 적용)"""
     profile_desc = profile.get("description", "")
     grant_text = " ".join([
         grant.get("title", ""),
@@ -371,8 +437,9 @@ def _description_match(grant: dict, profile: dict) -> float:
     if not words:
         return 0.0
 
-    matched = sum(1 for w in words if w in grant_text)
-    return matched / len(words)
+    weighted_total = sum(_word_weight(w) for w in words)
+    weighted_matched = sum(_word_weight(w) for w in words if w in grant_text)
+    return weighted_matched / weighted_total
 
 
 # ============================================
