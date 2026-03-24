@@ -21,7 +21,7 @@ PROFILE_COLUMNS = ["team_id", "user_id", "keywords", "description", "stage", "re
 MAX_MATCH_RESULTS = 3
 MAX_GRANTS_TO_SCAN = 20
 MIN_DEADLINE_DAYS = 14
-MIN_MATCH_SCORE = 0.25  # 25% 미만은 결과에서 제외
+MIN_MATCH_SCORE = 0.30  # 30% 미만은 결과에서 제외
 
 # 프로필 옵션
 STAGE_OPTIONS = ["예비", "초기", "시드", "시리즈A"]

@@ -72,6 +72,20 @@ def extract_documents(text: str) -> list[str]:
     return [doc for doc in doc_keywords if doc in text]
 
 
+_USAGE_KEYWORDS = [
+    "인건비", "마케팅비", "시제품", "R&D", "특허", "해외진출",
+    "설비", "임차료", "컨설팅", "교육비", "홍보비", "재료비",
+    "기자재", "외주용역비", "지식재산권", "인증비", "디자인",
+]
+
+
+def extract_usage(text: str) -> list[str]:
+    """description에서 지원금 활용 가능 항목 추출."""
+    if not text:
+        return []
+    return [kw for kw in _USAGE_KEYWORDS if kw in text]
+
+
 def extract_business_age_limit(text: str) -> int | None:
     """description에서 '창업 N년 미만' 같은 업력 제한을 추출. 없으면 None."""
     if not text:
@@ -413,6 +427,14 @@ def _stage_match(grant: dict, profile: dict) -> tuple[float, str]:
     return 0.0, ""
 
 
+_DESC_STOPWORDS = {
+    "기반", "통한", "위한", "관련", "대한", "활용", "지원", "사업",
+    "서비스", "제공", "개발", "분야", "등", "통해", "주요", "대상",
+    "및", "또는", "이를", "해당", "있는", "하는", "되는", "같은",
+    "중심", "목표", "방식", "현재", "최근", "진행", "운영", "구축",
+}
+
+
 def _word_weight(word: str) -> float:
     """단어 길이 기반 가중치 — 구체적 단어일수록 높은 비중."""
     if len(word) >= 4:
@@ -423,7 +445,7 @@ def _word_weight(word: str) -> float:
 
 
 def _description_match(grant: dict, profile: dict) -> float:
-    """설명 유사도 (substring 기반, 단어 길이 가중치 적용)"""
+    """설명 유사도 (substring 기반, 불용어 제외 + 단어 길이 가중치 적용)"""
     profile_desc = profile.get("description", "")
     grant_text = " ".join([
         grant.get("title", ""),
@@ -433,7 +455,8 @@ def _description_match(grant: dict, profile: dict) -> float:
     if not profile_desc or not grant_text:
         return 0.0
 
-    words = [w for w in profile_desc.lower().split() if len(w) >= 2]
+    words = [w for w in profile_desc.lower().split()
+             if len(w) >= 2 and w not in _DESC_STOPWORDS]
     if not words:
         return 0.0
 
@@ -512,30 +535,50 @@ def build_grant_card(result: dict, today) -> list[dict]:
     docs = extract_documents(desc)
     docs_display = ", ".join(docs) if docs else "공고 확인 필요"
 
-    # 1행: 지원 가능 + D-day
+    # 긴급도 레이블
+    urgency = ""
+    if d_day_text:
+        try:
+            days_left = int(d_day_text.replace("D-", ""))
+            if days_left <= 21:
+                urgency = ":zap: 서두르세요  "
+            elif days_left <= 30:
+                urgency = ":clock3: 여유있음  "
+        except ValueError:
+            pass
+
+    # 지원금 활용처
+    usage = extract_usage(desc)
+    usage_display = ", ".join(usage) if usage else ""
+
+    # 1행: 지원 가능 + 긴급도 + D-day
     line1 = ":white_check_mark: 지원 가능"
     if d_day_text:
-        line1 += f"  {d_day_text}"
+        line1 += f"  {urgency}{d_day_text}"
         if deadline_short:
             line1 += f" (마감 {deadline_short})"
 
     # 2행: 제목
     line2 = f"*{grant['title']}*"
 
-    # 3행: 금액 볼드 + 기관명
-    if amount_display != "금액 미정":
-        line3 = f":moneybag: *{amount_display}* · {grant['organization']}"
-    else:
-        line3 = f"{grant['organization']}"
+    # 3행: 주관 기관
+    line3 = f"주관: {grant['organization']}"
 
     # 4행: 매칭 사유
     line4 = f"매칭 {score}%: {result['reason']}"
+
+    # 본문 조합
+    body_text = f"{line1}\n{line2}\n{line3}"
+    if amount_display != "금액 미정":
+        body_text += f"\n지원금: *{amount_display}*"
+    if usage_display:
+        body_text += f"\n활용 가능: {usage_display}"
 
     section = {
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": f"{line1}\n{line2}\n{line3}",
+            "text": body_text,
         },
     }
 
