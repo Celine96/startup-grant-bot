@@ -440,7 +440,7 @@ def profile_command(ack, command, say):
         say("프로필이 없습니다. `/register` 명령어로 등록하세요.")
 
 
-@slack_app.command("/test")
+@slack_app.command("/matching")
 def test_matching(ack, command, say, client):
     """매칭 테스트 (Block Kit 카드형 결과)"""
     ack()
