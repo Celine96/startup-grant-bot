@@ -257,7 +257,7 @@ def _ensure_grant_headers(sheet) -> None:
 
 
 def get_active_grants() -> list[dict]:
-    """마감 전 공고 전체 조회"""
+    """마감 전 공고 전체 조회 (마감일 불명확한 공고는 제외)"""
     try:
         sheet = get_sheets().worksheet("grants")
         _ensure_grant_headers(sheet)
@@ -269,7 +269,10 @@ def get_active_grants() -> list[dict]:
             if not url or not (url.startswith("http://") or url.startswith("https://")):
                 continue
             deadline = str(r.get("deadline", "")).strip()
-            if not deadline or deadline >= today or len(deadline) != 10:
+            # 마감일이 YYYY-MM-DD 형식이 아니거나 없으면 제외
+            if not deadline or len(deadline) != 10:
+                continue
+            if deadline >= today:
                 active.append(r)
         return active
     except Exception as e:
